@@ -40,7 +40,7 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       _count: { status: true },
     });
 
-    const statusBreakdown = statusCounts.reduce((acc, curr) => {
+    const statusBreakdown = statusCounts.reduce<Record<string, number>>((acc, curr) => {
       acc[curr.status] = curr._count.status;
       return acc;
     }, {} as Record<string, number>);

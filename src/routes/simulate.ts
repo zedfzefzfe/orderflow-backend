@@ -33,7 +33,7 @@ router.post('/message', requireAuth, async (req: AuthenticatedRequest, res) => {
     // Log every message regardless of whether it's an order
     await prisma.messageLog.create({
       data: { businessId, fromPhone: phone, body: messageText, parsed: parsed.isOrder },
-    }).catch((err) => console.error('[simulate] MessageLog write failed:', err));
+    }).catch((err: unknown) => console.error('[simulate] MessageLog write failed:', err));
 
     if (!parsed.isOrder) {
       res.json({ success: true, isOrder: false, parsed, message: 'Message analysé mais pas une commande' });
