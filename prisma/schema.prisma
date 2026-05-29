@@ -1,0 +1,74 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Business {
+  id                   String   @id @default(uuid())
+  name                 String
+  whatsappPhoneNumberId String?  @map("whatsapp_phone_number_id")
+  ownerNotifyPhone     String?  @map("owner_notify_phone")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  users       User[]
+  orders      Order[]
+  messageLogs MessageLog[]
+
+  @@map("businesses")
+}
+
+model User {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  password    String
+  businessId  String   @map("business_id")
+  role        String   @default("owner")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@map("users")
+}
+
+enum OrderStatus {
+  NEW
+  CONFIRMED
+  DELIVERED
+  CANCELLED
+}
+
+model Order {
+  id            String      @id @default(uuid())
+  businessId    String      @map("business_id")
+  customerName  String      @map("customer_name")
+  customerPhone String      @map("customer_phone")
+  product       String
+  quantity      Int
+  address       String?
+  deliveryDate  String?     @map("delivery_date")
+  totalPrice    Float?      @map("total_price")
+  status        OrderStatus @default(NEW)
+  rawMessage    String      @map("raw_message")
+  source        String      @default("whatsapp")
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@map("orders")
+}
+
+model MessageLog {
+  id         String   @id @default(uuid())
+  businessId String   @map("business_id")
+  fromPhone  String   @map("from_phone")
+  body       String
+  parsed     Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@map("message_logs")
+}
