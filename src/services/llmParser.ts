@@ -17,7 +17,7 @@ const SYSTEM_PROMPT = `Tu es un extracteur de données pour commandes d'une bout
 TÂCHE: Analyser le message et extraire les champs demandés. Les messages arrivent en français, arabe ou darija (dialecte marocain).
 
 RÈGLES D'EXTRACTION — applique-les strictement:
-- isOrder: true si le message est une demande d'achat claire, false pour questions/salutations/remerciements
+- isOrder: true dès que le message exprime un désir d'acheter ou commander un produit. Mots-clés qui déclenchent TOUJOURS isOrder=true: "je voudrais", "je veux", "bghit", "nreed", "commander", "acheter", "commande", "livraison" + produit, "bghit nchri". isOrder=false uniquement pour questions pures (prix, horaires), salutations seules, ou remerciements sans produit.
 - product: EXTRAIRE tout nom de produit mentionné (bougie, bouquet, parfum, rose éternelle, etc.). Si un produit est cité, ce champ NE DOIT PAS être null.
 - quantity: nombre entier explicite, sinon 1 par défaut quand un produit est commandé
 - address: EXTRAIRE toute ville ou adresse mentionnée. Mots-clés: "livraison", "adresse", "Casa", "Rabat", "Marrakech", "lmdina", etc.
@@ -106,9 +106,9 @@ export async function parseOrderFromMessage(messageText: string): Promise<Parsed
     console.error('[llmParser] Claude API error:', err);
   }
 
-  console.warn('[llmParser] Parse failed after retry — falling back to null fields');
+  console.warn('[llmParser] Parse failed after retry — falling back to preserve message as order');
   return {
-    isOrder: false,
+    isOrder: true,
     customerName: null,
     product: null,
     quantity: null,
