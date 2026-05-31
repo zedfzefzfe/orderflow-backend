@@ -8,11 +8,12 @@ datasource db {
 }
 
 model Business {
-  id                   String   @id @default(uuid())
-  name                 String
-  whatsappPhoneNumberId String?  @map("whatsapp_phone_number_id")
-  ownerNotifyPhone     String?  @map("owner_notify_phone")
-  createdAt            DateTime @default(now()) @map("created_at")
+  id                          String   @id @default(uuid())
+  name                        String
+  whatsappPhoneNumberId        String?  @map("whatsapp_phone_number_id")
+  whatsappBusinessAccountId    String?  @map("whatsapp_business_account_id")
+  ownerNotifyPhone             String?  @map("owner_notify_phone")
+  createdAt                   DateTime @default(now()) @map("created_at")
 
   users       User[]
   orders      Order[]
