@@ -14,6 +14,12 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Request logger — makes every inbound request visible in Railway deploy logs
+app.use((req, _res, next) => {
+  console.log(`[http] ${req.method} ${req.path}`);
+  next();
+});
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
