@@ -1,6 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Lazy client — instantiated on first use so Railway env vars are guaranteed loaded
+let _anthropic: Anthropic | null = null;
+function getClient(): Anthropic {
+  if (!_anthropic) _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  return _anthropic;
+}
 
 export interface ParsedOrder {
   isOrder: boolean;
@@ -82,16 +87,33 @@ function parseJsonSafe(text: string): ParsedOrder | null {
   }
 }
 
+const MODEL = 'claude-haiku-4-5-20251001';
+
 async function callClaude(messageText: string): Promise<string> {
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 256,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: messageText }],
-  });
-  const content = response.content[0];
-  if (content.type !== 'text') throw new Error('Non-text response');
-  return content.text;
+  const messages = [{ role: 'user' as const, content: messageText }];
+
+  console.log('[llmParser] callClaude —', JSON.stringify({
+    apiKeyExists: !!process.env.ANTHROPIC_API_KEY,
+    model: MODEL,
+    messages,
+  }));
+
+  try {
+    const response = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 256,
+      system: SYSTEM_PROMPT,
+      messages,
+    });
+    const content = response.content[0];
+    if (content.type !== 'text') throw new Error('Non-text response');
+    return content.text;
+  } catch (err: unknown) {
+    const status = (err as Record<string, unknown>)?.status;
+    const errBody = (err as Record<string, unknown>)?.error;
+    console.error('[llmParser] Anthropic API error — status:', status, '— body:', JSON.stringify(errBody));
+    throw err;
+  }
 }
 
 export async function parseOrderFromMessage(messageText: string): Promise<ParsedOrder> {
