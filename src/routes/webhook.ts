@@ -84,6 +84,22 @@ async function handleWebhookPayload(body: Record<string, unknown>): Promise<void
         console.log('[webhook] Parsed result:', JSON.stringify(parsed));
 
         if (parsed.isOrder) {
+          // Enforce plan order limit before creating
+          const PLAN_LIMITS: Record<string, number> = {
+            trial: 50,
+            starter: 200,
+            growth: -1,
+            pro: -1,
+          };
+          const limit = PLAN_LIMITS[business.plan] ?? 50;
+          if (limit !== -1) {
+            const count = await prisma.order.count({ where: { businessId: business.id } });
+            if (count >= limit) {
+              console.log(`[webhook] Order blocked for business "${business.name}" — plan limit reached (${count}/${limit})`);
+              continue;
+            }
+          }
+
           const order = await prisma.order.create({
             data: {
               businessId: business.id,

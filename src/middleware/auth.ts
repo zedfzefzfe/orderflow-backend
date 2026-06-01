@@ -39,8 +39,15 @@ export async function requireAuth(
     // Auto-provision: create business + user for new Supabase sign-ups
     if (!dbUser) {
       const emailName = data.user.email.split('@')[0];
+      const trialEndsAt = new Date();
+      trialEndsAt.setDate(trialEndsAt.getDate() + 30);
       const business = await prisma.business.create({
-        data: { name: `${emailName}'s Shop` },
+        data: {
+          name: `${emailName}'s Shop`,
+          email: data.user.email,
+          plan: 'trial',
+          trialEndsAt,
+        },
       });
       dbUser = await prisma.user.create({
         data: {

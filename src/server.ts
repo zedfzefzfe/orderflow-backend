@@ -5,6 +5,9 @@ import webhookRoutes from './routes/webhook.js';
 import orderRoutes from './routes/orders.js';
 import statsRoutes from './routes/stats.js';
 import simulateRoutes from './routes/simulate.js';
+import businessRoutes from './routes/business.js';
+import onboardingRoutes from './routes/onboarding.js';
+import adminRoutes from './routes/admin.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -30,6 +33,9 @@ app.use('/api/webhook/whatsapp', webhookRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/stats', statsRoutes);
 app.use('/api/simulate', simulateRoutes);
+app.use('/api/business', businessRoutes);
+app.use('/api/onboarding', onboardingRoutes);
+app.use('/api/admin', adminRoutes);
 
 // 404 handler
 app.use((_req, res) => {
