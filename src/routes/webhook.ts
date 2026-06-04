@@ -23,7 +23,7 @@ router.get('/', (req: Request, res: Response): void => {
   res.sendStatus(403);
 });
 
-// Incoming messages (POST) — handles both Twilio and Meta payloads
+// Incoming messages (POST) — handles Twilio, Meta, and YCloud payloads
 router.post('/', (req: Request, res: Response): void => {
   console.log('[webhook] POST received — raw payload:', JSON.stringify(req.body));
 
@@ -32,6 +32,15 @@ router.post('/', (req: Request, res: Response): void => {
     handleTwilioPayload(req, res).catch((err) => {
       console.error('[webhook/twilio] Processing error:', err);
       res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+    });
+    return;
+  }
+
+  // YCloud payload
+  if (req.body.type === 'whatsapp.inbound_message.received' && req.body.whatsappInboundMessage) {
+    res.status(200).json({ received: true });
+    handleYCloudPayload(req.body).catch((err) => {
+      console.error('[webhook/ycloud] Processing error:', err);
     });
     return;
   }
@@ -126,6 +135,43 @@ async function handleMetaPayload(body: Record<string, unknown>): Promise<void> {
       }
     }
   }
+}
+
+// --- YCloud handler (fire-and-forget) ---
+
+async function handleYCloudPayload(body: Record<string, unknown>): Promise<void> {
+  const msg = body.whatsappInboundMessage as Record<string, unknown>;
+  if (msg.type !== 'text') {
+    console.log('[webhook/ycloud] Skipping non-text message type:', msg.type);
+    return;
+  }
+
+  const textObj = msg.text as Record<string, string> | undefined;
+  const messageText = textObj?.body || '';
+  const senderPhone = msg.from as string;
+  const profile = msg.customerProfile as Record<string, string> | undefined;
+  const senderName = profile?.name || null;
+  const wabaId = msg.wabaId as string | undefined;
+
+  console.log(`[webhook/ycloud] Message from ${senderPhone} (${senderName ?? 'no name'}): "${messageText}"`);
+
+  const business = await prisma.business.findFirst({
+    where: { whatsappBusinessAccountId: wabaId },
+  });
+
+  if (!business) {
+    console.log(`[webhook/ycloud] No business found for wabaId: ${wabaId}`);
+    return;
+  }
+
+  await prisma.messageLog.create({
+    data: { businessId: business.id, fromPhone: senderPhone, body: messageText, parsed: false },
+  });
+
+  const parsed = await parseOrderMessage(messageText);
+  console.log('[webhook/ycloud] Parsed result:', JSON.stringify(parsed));
+
+  await processParsedOrder({ business, parsed, senderPhone, senderName, messageText, source: 'ycloud' });
 }
 
 // --- Shared order creation logic ---
