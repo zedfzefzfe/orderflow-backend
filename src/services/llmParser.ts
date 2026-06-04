@@ -17,13 +17,13 @@ export interface ParsedOrder {
   totalPrice: number | null;
 }
 
-const SYSTEM_PROMPT = `Tu es un extracteur de données pour commandes d'une boutique marocaine (bougies, parfums, bouquets, cadeaux).
+const SYSTEM_PROMPT = `Tu es un extracteur de données pour commandes d'une boutique marocaine (tout type de produit).
 
 TÂCHE: Analyser le message et extraire les champs demandés. Les messages arrivent en français, arabe ou darija (dialecte marocain).
 
 RÈGLES D'EXTRACTION — applique-les strictement:
-- isOrder: true dès que le message exprime un désir d'acheter ou commander un produit. Mots-clés qui déclenchent TOUJOURS isOrder=true: "je voudrais", "je veux", "bghit", "nreed", "commander", "acheter", "commande", "livraison" + produit, "bghit nchri". isOrder=false uniquement pour questions pures (prix, horaires), salutations seules, ou remerciements sans produit.
-- product: EXTRAIRE tout nom de produit mentionné (bougie, bouquet, parfum, rose éternelle, etc.). Si un produit est cité, ce champ NE DOIT PAS être null.
+- isOrder: true dès que le message exprime un désir d'acheter ou commander un produit, quelle que soit la catégorie. Mots-clés qui déclenchent TOUJOURS isOrder=true: "je voudrais", "je veux", "bghit", "nreed", "commander", "acheter", "commande", "livraison" + produit, "bghit nchri", "3tini", "عطيني", "بغيت". isOrder=false uniquement pour questions pures (prix, horaires), salutations seules, ou remerciements sans produit.
+- product: EXTRAIRE tout nom de produit ou plat mentionné, quelle que soit la catégorie (nourriture, cadeaux, vêtements, etc.). Si un produit est cité, ce champ NE DOIT PAS être null.
 - quantity: nombre entier explicite, sinon 1 par défaut quand un produit est commandé
 - address: EXTRAIRE toute ville ou adresse mentionnée. Mots-clés: "livraison", "adresse", "Casa", "Rabat", "Marrakech", "lmdina", etc.
 - deliveryDate: EXTRAIRE toute mention de date ou jour. Exemples darija: "nhar lkhmis"=jeudi, "lhad"=dimanche, "ghda"/"demain"=demain, "juj ayam"=dans 2 jours, "had simana"=cette semaine.
@@ -31,6 +31,9 @@ RÈGLES D'EXTRACTION — applique-les strictement:
 - totalPrice: prix total si le client le mentionne, sinon null
 
 EXEMPLES — message → JSON attendu:
+
+"bghit 2 poulets rôtis livraison Casa"
+→ {"isOrder":true,"customerName":null,"product":"poulet rôti","quantity":2,"address":"Casablanca","deliveryDate":null,"totalPrice":null}
 
 "salam bghit 2 bougies vanille livraison Rabat nhar lkhmis"
 → {"isOrder":true,"customerName":null,"product":"bougies vanille","quantity":2,"address":"Rabat","deliveryDate":"nhar lkhmis","totalPrice":null}
@@ -41,16 +44,16 @@ EXEMPLES — message → JSON attendu:
 "bghit bougie oud, Casa, ghda"
 → {"isOrder":true,"customerName":null,"product":"bougie oud","quantity":1,"address":"Casa","deliveryDate":"ghda","totalPrice":null}
 
-"3andi tlb: juj bougies oud w wahd parfum rose, livraison Marrakech"
-→ {"isOrder":true,"customerName":null,"product":"bougies oud et parfum rose","quantity":3,"address":"Marrakech","deliveryDate":null,"totalPrice":null}
+"3andi tlb: juj sandwichs w wahd jus orange, livraison Marrakech"
+→ {"isOrder":true,"customerName":null,"product":"sandwichs et jus orange","quantity":3,"address":"Marrakech","deliveryDate":null,"totalPrice":null}
 
-"je veux commander bougies vanille pour Fatima, livraison Casablanca lhad"
-→ {"isOrder":true,"customerName":"Fatima","product":"bougies vanille","quantity":1,"address":"Casablanca","deliveryDate":"lhad","totalPrice":null}
+"je veux commander une robe pour Fatima, livraison Casablanca lhad"
+→ {"isOrder":true,"customerName":"Fatima","product":"robe","quantity":1,"address":"Casablanca","deliveryDate":"lhad","totalPrice":null}
 
 "wahd bouquet dial ward, t3awdili nhar lhad f Agadir"
 → {"isOrder":true,"customerName":null,"product":"bouquet ward","quantity":1,"address":"Agadir","deliveryDate":"nhar lhad","totalPrice":null}
 
-"chhal taman dyal bougie lavande?"
+"chhal taman dyal poulet rôti?"
 → {"isOrder":false,"customerName":null,"product":null,"quantity":null,"address":null,"deliveryDate":null,"totalPrice":null}
 
 "salam" → {"isOrder":false,"customerName":null,"product":null,"quantity":null,"address":null,"deliveryDate":null,"totalPrice":null}
