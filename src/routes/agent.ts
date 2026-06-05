@@ -461,7 +461,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     // Step 2: poll for completion
     let runId: string | null = null;
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 1000));
       const statusRes = await fetch(`https://client.camb.ai/apis/tts/${taskId}`, {
         headers: cambHeaders,
