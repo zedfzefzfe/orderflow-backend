@@ -347,7 +347,9 @@ router.get('/advice', requireAuth, async (req: AuthenticatedRequest, res) => {
     const response = await getClient().messages.create({
       model: MODEL,
       max_tokens: 150,
-      system: `Tu es un conseiller business expert en e-commerce marocain et boutiques Instagram. Tu donnes UN seul conseil court et actionnable basé sur les vraies données de la boutique. Maximum 2 phrases. Conseil pratique et spécifique, pas générique.`,
+      system: `Tu es un conseiller business expert en e-commerce marocain et boutiques Instagram. Tu donnes UN seul conseil court et actionnable basé sur les vraies données de la boutique. Maximum 2 phrases. Conseil pratique et spécifique, pas générique.
+
+IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisques, pas de hashtags, pas d'emojis, pas de titres. Juste du texte naturel comme si tu parlais à voix haute.`,
       messages: [
         {
           role: 'user',
@@ -374,7 +376,9 @@ router.get('/daily-summary', requireAuth, async (req: AuthenticatedRequest, res)
     const response = await getClient().messages.create({
       model: MODEL,
       max_tokens: 250,
-      system: `Tu es un assistant business qui fait un résumé quotidien naturel et encourageant en français pour un propriétaire de boutique marocaine. Maximum 3-4 phrases, ton chaleureux et direct.`,
+      system: `Tu es un assistant business qui fait un résumé quotidien naturel et encourageant en français pour un propriétaire de boutique marocaine. Maximum 3-4 phrases, ton chaleureux et direct.
+
+IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisques, pas de hashtags, pas d'emojis, pas de titres. Juste du texte naturel comme si tu parlais à voix haute.`,
       messages: [
         {
           role: 'user',
