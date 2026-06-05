@@ -413,38 +413,69 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    const HF_TOKEN = process.env.HF_API_TOKEN;
-    if (!HF_TOKEN) throw new Error('HF_API_TOKEN not configured');
+    const CAMB_API_KEY = process.env.CAMB_API_KEY;
+    if (!CAMB_API_KEY) throw new Error('CAMB_API_KEY not configured');
 
-    console.log('[TTS] Calling Hugging Face Kokoro TTS...');
+    console.log('[TTS] Calling CAMB.AI TTS...');
 
-    const response = await fetch(
-      'https://api-inference.huggingface.co/models/hexgrad/Kokoro-82M',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${HF_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ inputs: cleanText }),
+    const response = await fetch('https://client.camb.ai/apis/tts', {
+      method: 'POST',
+      headers: {
+        'x-api-key': CAMB_API_KEY,
+        'Content-Type': 'application/json',
       },
-    );
+      body: JSON.stringify({
+        text: cleanText,
+        language: 'french',
+        gender: 'female',
+        age: 'adult',
+      }),
+    });
 
-    console.log('[TTS] HuggingFace response status:', response.status);
+    console.log('[TTS] CAMB.AI response status:', response.status);
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error('[TTS] HuggingFace error:', errorText);
-      throw new Error(`HF TTS error: ${response.status}`);
+      console.error('[TTS] CAMB.AI error:', errorText);
+      throw new Error(`CAMB.AI TTS error: ${response.status}`);
     }
 
-    const contentType = response.headers.get('content-type') || 'audio/flac';
-    const audioBuffer = Buffer.from(await response.arrayBuffer());
+    const data = await response.json() as { task_id: string };
+    console.log('[TTS] CAMB.AI task_id:', data.task_id);
+
+    // CAMB.AI is async — poll for result
+    const taskId = data.task_id;
+    let audioUrl: string | null = null;
+    let attempts = 0;
+
+    while (!audioUrl && attempts < 15) {
+      await new Promise(r => setTimeout(r, 2000));
+      attempts++;
+
+      const statusRes = await fetch(
+        `https://client.camb.ai/apis/tts/${taskId}`,
+        { headers: { 'x-api-key': CAMB_API_KEY } },
+      );
+
+      const statusData = await statusRes.json() as { status: string; audio_url?: string };
+      console.log('[TTS] Poll attempt', attempts, ':', statusData.status);
+
+      if (statusData.status === 'SUCCESS') {
+        audioUrl = statusData.audio_url ?? null;
+      } else if (statusData.status === 'FAILED') {
+        throw new Error('CAMB.AI TTS generation failed');
+      }
+    }
+
+    if (!audioUrl) throw new Error('CAMB.AI TTS timeout');
+
+    const audioRes = await fetch(audioUrl);
+    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
 
     console.log('[TTS] Audio received, size:', audioBuffer.length, 'bytes');
 
     res.set({
-      'Content-Type': contentType,
+      'Content-Type': 'audio/mpeg',
       'Content-Length': String(audioBuffer.length),
       'Cache-Control': 'no-cache',
     });
