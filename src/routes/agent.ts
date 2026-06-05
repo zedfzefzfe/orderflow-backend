@@ -1,8 +1,8 @@
 import { Router } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
+import { EdgeTTS } from 'edge-tts-universal';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
-import { supabaseAdmin } from '../lib/supabase.js';
 
 const router = Router();
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -397,136 +397,43 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
   }
 });
 
-// GET /api/agent/tts-languages — temporary debug: list CAMB.AI voices (no auth required)
-router.get('/tts-languages', async (_req, res) => {
-  try {
-    const CAMB_API_KEY = process.env.CAMB_API_KEY;
-    if (!CAMB_API_KEY) { res.status(500).json({ error: 'CAMB_API_KEY not configured' }); return; }
-
-    const response = await fetch('https://client.camb.ai/apis/list-voices', {
-      headers: { 'x-api-key': CAMB_API_KEY },
-    });
-
-    const data = await response.json();
-    console.log('[TTS] CAMB.AI voices:', JSON.stringify(data));
-    res.json(data);
-  } catch (error) {
-    console.error('[TTS] voices error:', error);
-    res.status(500).json({ error: String(error) });
-  }
-});
-
-// GET /api/agent/audio/:runId — public, sends full CAMB.AI audio buffer
-router.get('/audio/:runId', async (req, res) => {
-  try {
-    const CAMB_API_KEY = process.env.CAMB_API_KEY;
-    if (!CAMB_API_KEY) { res.status(500).end(); return; }
-
-    const audioRes = await fetch(
-      `https://client.camb.ai/apis/tts-result/${req.params.runId}`,
-      { headers: { 'x-api-key': CAMB_API_KEY, 'Content-Type': 'application/json' } },
-    );
-
-    const buffer = Buffer.from(await audioRes.arrayBuffer());
-    const contentType = audioRes.headers.get('content-type') || 'audio/flac';
-    console.log('[TTS] Serving audio, content-type:', contentType, 'size:', buffer.length);
-
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Length', buffer.length); // use actual buffer size, not upstream header
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.end(buffer);
-  } catch (error) {
-    console.error('[TTS] audio serve error:', error);
-    res.status(500).end();
-  }
-});
-
 // POST /api/agent/speak
 router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { text } = req.body as { text: string };
 
-    const cleanText = (text ?? '')
+    const summaryText = (text ?? '')
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/#{1,6}\s/g, '')
       .replace(/[*_`#]/g, '')
       .substring(0, 200)
       .trim();
 
-    if (!cleanText) {
+    if (!summaryText) {
       res.status(400).json({ error: 'Text requis' });
       return;
     }
 
-    const CAMB_API_KEY = process.env.CAMB_API_KEY;
-    if (!CAMB_API_KEY) throw new Error('CAMB_API_KEY not configured');
-
-    const cambHeaders = {
-      'x-api-key': CAMB_API_KEY,
-      'Content-Type': 'application/json',
-    };
-
-    // Step 1: create TTS task (Melanie Deschamps, French)
-    const ttsRes = await fetch('https://client.camb.ai/apis/tts', {
-      method: 'POST',
-      headers: cambHeaders,
-      body: JSON.stringify({ text: cleanText, voice_id: 170895, language: 76, output_format: 'mp3' }),
+    const tts = new EdgeTTS(summaryText, 'fr-FR-DeniseNeural', {
+      rate: '-5%',
+      pitch: '+0Hz',
+      volume: '+0%',
     });
 
-    console.log('[TTS] TTS response status:', ttsRes.status);
+    console.log('[TTS] calling synthesize for:', summaryText.slice(0, 60));
+    const result = await tts.synthesize();
+    console.log('[TTS] synthesize done, audio type:', result.audio.type);
+    const audioBuffer = Buffer.from(await result.audio.arrayBuffer());
+    console.log('[TTS] buffer size:', audioBuffer.length);
 
-    if (!ttsRes.ok) {
-      const err = await ttsRes.text();
-      console.error('[TTS] TTS error:', err);
-      throw new Error(`CAMB.AI error: ${ttsRes.status}`);
-    }
-
-    const ttsData = await ttsRes.json() as { task_id: string };
-    const taskId = ttsData.task_id;
-    console.log('[TTS] task_id:', taskId);
-
-    // Step 2: poll for completion
-    let runId: string | null = null;
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      const statusRes = await fetch(`https://client.camb.ai/apis/tts/${taskId}`, {
-        headers: cambHeaders,
-      });
-      const statusData = await statusRes.json() as { status: string; run_id?: string };
-      console.log('[TTS] Poll', i + 1, '- full response:', JSON.stringify(statusData));
-      const st = statusData.status?.toUpperCase();
-      if (st === 'SUCCESS' || st === 'COMPLETED' || st === 'DONE') { runId = statusData.run_id ?? null; break; }
-      if (st === 'FAILED' || st === 'ERROR') throw new Error('TTS failed');
-    }
-
-    if (!runId) throw new Error('TTS timeout');
-
-    // Download audio from CAMB.AI
-    const audioRes = await fetch(
-      `https://client.camb.ai/apis/tts-result/${runId}`,
-      { headers: cambHeaders },
-    );
-    const contentType = audioRes.headers.get('content-type') || 'audio/flac';
-    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
-    console.log('[TTS] Downloaded audio, size:', audioBuffer.length, 'type:', contentType);
-
-    // Upload to Supabase Storage so the browser fetches from CDN (not Railway)
-    const fileName = `tts/${runId}.flac`;
-    await supabaseAdmin.storage.createBucket('tts-audio', { public: true }).catch(() => {});
-    const { error: uploadError } = await supabaseAdmin.storage
-      .from('tts-audio')
-      .upload(fileName, audioBuffer, { contentType, upsert: true });
-
-    if (uploadError) throw new Error(`Supabase upload failed: ${uploadError.message}`);
-
-    const { data: urlData } = supabaseAdmin.storage.from('tts-audio').getPublicUrl(fileName);
-    const audioUrl = urlData.publicUrl;
-    console.log('[TTS] audioUrl (Supabase CDN):', audioUrl);
-    res.json({ audioUrl });
+    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Length', audioBuffer.length);
+    res.setHeader('Connection', 'keep-alive');
+    res.end(audioBuffer);
   } catch (error) {
-    console.error('[TTS] Error:', error);
-    res.status(500).json({ error: 'TTS failed', fallback: true });
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error('[TTS] edge-tts error:', error);
+    res.status(500).json({ error: msg });
   }
 });
 
