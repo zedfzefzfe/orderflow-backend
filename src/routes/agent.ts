@@ -415,6 +415,33 @@ router.get('/tts-languages', async (_req, res) => {
   }
 });
 
+// GET /api/agent/audio/:runId — public, streams CAMB.AI audio to browser
+router.get('/audio/:runId', async (req, res) => {
+  try {
+    const CAMB_API_KEY = process.env.CAMB_API_KEY;
+    if (!CAMB_API_KEY) { res.status(500).end(); return; }
+
+    const audioRes = await fetch(
+      `https://client.camb.ai/apis/tts-result/${req.params.runId}`,
+      { headers: { 'x-api-key': CAMB_API_KEY, 'Content-Type': 'application/json' } },
+    );
+
+    const contentType = audioRes.headers.get('content-type') || 'audio/mpeg';
+    const contentLength = audioRes.headers.get('content-length');
+    console.log('[TTS] Serving audio, content-type:', contentType);
+
+    res.set('Content-Type', contentType);
+    if (contentLength) res.set('Content-Length', contentLength);
+    res.set('Cache-Control', 'public, max-age=3600');
+
+    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+    res.send(audioBuffer);
+  } catch (error) {
+    console.error('[TTS] audio serve error:', error);
+    res.status(500).end();
+  }
+});
+
 // POST /api/agent/speak
 router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
@@ -475,21 +502,8 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     if (!runId) throw new Error('TTS timeout');
 
-    // Step 3: download audio
-    const audioRes = await fetch(`https://client.camb.ai/apis/tts-result/${runId}`, {
-      headers: cambHeaders,
-    });
-    const contentType = audioRes.headers.get('content-type') || 'audio/mpeg';
-    console.log('[TTS] CAMB.AI content-type:', contentType);
-    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
-    console.log('[TTS] Audio size:', audioBuffer.length);
-
-    res.set({
-      'Content-Type': contentType,
-      'Content-Length': String(audioBuffer.length),
-      'Cache-Control': 'no-cache',
-    });
-    res.send(audioBuffer);
+    console.log('[TTS] Audio ready, runId:', runId);
+    res.json({ runId });
   } catch (error) {
     console.error('[TTS] Error:', error);
     res.status(500).json({ error: 'TTS failed', fallback: true });
