@@ -501,8 +501,17 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     if (!runId) throw new Error('TTS timeout');
 
-    console.log('[TTS] Audio ready, runId:', runId);
-    res.json({ runId });
+    // Probe the audio endpoint — if CAMB.AI redirects to a CDN (S3/GCS),
+    // response.url will be the public CDN URL the browser can fetch directly.
+    const probeRes = await fetch(
+      `https://client.camb.ai/apis/tts-result/${runId}`,
+      { headers: cambHeaders },
+    );
+    const audioUrl = probeRes.url !== `https://client.camb.ai/apis/tts-result/${runId}`
+      ? probeRes.url                        // public CDN URL — browser fetches directly
+      : `/api/agent/audio/${runId}`;        // no redirect — fall back to our proxy
+    console.log('[TTS] audioUrl:', audioUrl);
+    res.json({ audioUrl });
   } catch (error) {
     console.error('[TTS] Error:', error);
     res.status(500).json({ error: 'TTS failed', fallback: true });
