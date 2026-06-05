@@ -10,6 +10,7 @@ import onboardingRoutes from './routes/onboarding.js';
 import adminRoutes from './routes/admin.js';
 import analyticsRoutes from './routes/analytics.js';
 import catalogRoutes from './routes/catalog.js';
+import agentRoutes from './routes/agent.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -40,6 +41,7 @@ app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/catalog', catalogRoutes);
+app.use('/api/agent', agentRoutes);
 
 // 404 handler
 app.use((_req, res) => {
