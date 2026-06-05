@@ -398,6 +398,8 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
 
 // POST /api/agent/speak
 router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
+  console.log('[TTS] VOICE_ID exists:', !!process.env.ELEVENLABS_VOICE_ID);
+  console.log('[TTS] API_KEY exists:', !!process.env.ELEVENLABS_API_KEY);
   try {
     const { text } = req.body as { text: string };
 
@@ -443,6 +445,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       },
     );
 
+    console.log('[TTS] ElevenLabs response status:', response.status);
     if (!response.ok) {
       const errorText = await response.text();
       console.error('ElevenLabs error:', response.status, errorText);
