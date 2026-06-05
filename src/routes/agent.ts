@@ -396,6 +396,25 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
   }
 });
 
+// GET /api/agent/tts-languages — temporary debug: find CAMB.AI language IDs
+router.get('/tts-languages', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const CAMB_API_KEY = process.env.CAMB_API_KEY;
+    if (!CAMB_API_KEY) { res.status(500).json({ error: 'CAMB_API_KEY not configured' }); return; }
+
+    const response = await fetch('https://client.camb.ai/apis/languages', {
+      headers: { 'x-api-key': CAMB_API_KEY },
+    });
+
+    const data = await response.json();
+    console.log('[TTS] CAMB.AI languages:', JSON.stringify(data));
+    res.json(data);
+  } catch (error) {
+    console.error('[TTS] languages error:', error);
+    res.status(500).json({ error: String(error) });
+  }
+});
+
 // POST /api/agent/speak
 router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
@@ -426,9 +445,9 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       },
       body: JSON.stringify({
         text: cleanText,
-        language: 'french',
-        gender: 'female',
-        age: 'adult',
+        language: 6,   // French — verify via GET /api/agent/tts-languages
+        gender: 0,     // 0 = female
+        age: 1,        // 1 = adult
       }),
     });
 
