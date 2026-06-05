@@ -424,7 +424,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/#{1,6}\s/g, '')
       .replace(/[*_`#]/g, '')
-      .substring(0, 400)
+      .substring(0, 200)
       .trim();
 
     if (!cleanText) {
@@ -462,7 +462,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     // Step 2: poll for completion
     let runId: string | null = null;
     for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise(r => setTimeout(r, 500));
       const statusRes = await fetch(`https://client.camb.ai/apis/tts/${taskId}`, {
         headers: cambHeaders,
       });
