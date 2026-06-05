@@ -444,7 +444,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     const ttsRes = await fetch('https://client.camb.ai/apis/tts', {
       method: 'POST',
       headers: cambHeaders,
-      body: JSON.stringify({ text: cleanText, voice_id: 170922, language: 76 }),
+      body: JSON.stringify({ text: cleanText, voice_id: 165318, language: 76 }),
     });
 
     console.log('[TTS] TTS response status:', ttsRes.status);
@@ -462,7 +462,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     // Step 2: poll for completion
     let runId: string | null = null;
     for (let i = 0; i < 15; i++) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 1000));
       const statusRes = await fetch(`https://client.camb.ai/apis/tts/${taskId}`, {
         headers: cambHeaders,
       });
