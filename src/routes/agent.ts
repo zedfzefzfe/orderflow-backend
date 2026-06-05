@@ -1,7 +1,18 @@
 import { Router } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
+import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
+
+let _ttsClient: TextToSpeechClient | null = null;
+function getTtsClient(): TextToSpeechClient {
+  if (!_ttsClient) {
+    _ttsClient = new TextToSpeechClient({
+      apiKey: process.env.GOOGLE_TTS_API_KEY,
+    });
+  }
+  return _ttsClient;
+}
 
 const router = Router();
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -393,6 +404,49 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
   } catch (err) {
     console.error('[agent/daily-summary] error:', err);
     res.status(500).json({ error: 'Impossible de générer le résumé du jour.' });
+  }
+});
+
+// POST /api/agent/speak
+router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
+  const { text } = req.body as { text: string };
+  if (!text?.trim()) {
+    res.status(400).json({ error: 'Text requis' });
+    return;
+  }
+
+  const cleanText = text
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/#{1,6}\s/g, '')
+    .replace(/[*_`#]/g, '')
+    .substring(0, 500)
+    .trim();
+
+  try {
+    const [response] = await getTtsClient().synthesizeSpeech({
+      input: { text: cleanText },
+      voice: {
+        languageCode: 'fr-FR',
+        name: 'fr-FR-Chirp3-HD-Achernar',
+      },
+      audioConfig: {
+        audioEncoding: 'MP3' as const,
+        speakingRate: 0.95,
+        pitch: 0.0,
+      },
+    });
+
+    const audioBuffer = Buffer.from(response.audioContent as Uint8Array);
+
+    res.set({
+      'Content-Type': 'audio/mpeg',
+      'Content-Length': String(audioBuffer.length),
+      'Cache-Control': 'no-cache',
+    });
+    res.send(audioBuffer);
+  } catch (error) {
+    console.error('Google TTS error:', error);
+    res.status(500).json({ error: 'TTS failed' });
   }
 });
 
