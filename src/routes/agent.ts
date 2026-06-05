@@ -405,7 +405,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/#{1,6}\s/g, '')
       .replace(/[*_`#]/g, '')
-      .substring(0, 180)
+      .substring(0, 400)
       .trim();
 
     if (!cleanText) {
@@ -413,28 +413,44 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    const encoded = encodeURIComponent(cleanText);
-    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=fr&client=tw-ob`;
+    const HF_TOKEN = process.env.HF_API_TOKEN;
+    if (!HF_TOKEN) throw new Error('HF_API_TOKEN not configured');
 
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://translate.google.com',
+    console.log('[TTS] Calling Hugging Face Kokoro TTS...');
+
+    const response = await fetch(
+      'https://api-inference.huggingface.co/models/hexgrad/Kokoro-82M',
+      {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${HF_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ inputs: cleanText }),
       },
-    });
+    );
 
-    if (!response.ok) throw new Error(`Google TTS failed: ${response.status}`);
+    console.log('[TTS] HuggingFace response status:', response.status);
 
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[TTS] HuggingFace error:', errorText);
+      throw new Error(`HF TTS error: ${response.status}`);
+    }
+
+    const contentType = response.headers.get('content-type') || 'audio/flac';
     const audioBuffer = Buffer.from(await response.arrayBuffer());
 
+    console.log('[TTS] Audio received, size:', audioBuffer.length, 'bytes');
+
     res.set({
-      'Content-Type': 'audio/mpeg',
+      'Content-Type': contentType,
       'Content-Length': String(audioBuffer.length),
       'Cache-Control': 'no-cache',
     });
     res.send(audioBuffer);
   } catch (error) {
-    console.error('TTS error:', error);
+    console.error('[TTS] Error:', error);
     res.status(500).json({ error: 'TTS failed', fallback: true });
   }
 });
