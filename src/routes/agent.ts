@@ -396,21 +396,21 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
   }
 });
 
-// GET /api/agent/tts-languages — temporary debug: find CAMB.AI language IDs (no auth required)
+// GET /api/agent/tts-languages — temporary debug: list CAMB.AI voices (no auth required)
 router.get('/tts-languages', async (_req, res) => {
   try {
     const CAMB_API_KEY = process.env.CAMB_API_KEY;
     if (!CAMB_API_KEY) { res.status(500).json({ error: 'CAMB_API_KEY not configured' }); return; }
 
-    const response = await fetch('https://client.camb.ai/apis/languages', {
+    const response = await fetch('https://client.camb.ai/apis/list-voices', {
       headers: { 'x-api-key': CAMB_API_KEY },
     });
 
     const data = await response.json();
-    console.log('[TTS] CAMB.AI languages:', JSON.stringify(data));
+    console.log('[TTS] CAMB.AI voices:', JSON.stringify(data));
     res.json(data);
   } catch (error) {
-    console.error('[TTS] languages error:', error);
+    console.error('[TTS] voices error:', error);
     res.status(500).json({ error: String(error) });
   }
 });
@@ -435,66 +435,73 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     const CAMB_API_KEY = process.env.CAMB_API_KEY;
     if (!CAMB_API_KEY) throw new Error('CAMB_API_KEY not configured');
 
-    console.log('[TTS] Calling CAMB.AI TTS...');
+    const cambHeaders = {
+      'x-api-key': CAMB_API_KEY,
+      'Content-Type': 'application/json',
+    };
 
-    const response = await fetch('https://client.camb.ai/apis/tts', {
+    // Step 1: find a French voice ID
+    const voicesRes = await fetch('https://client.camb.ai/apis/list-voices', {
+      headers: cambHeaders,
+    });
+    const voicesData = await voicesRes.json() as unknown;
+    console.log('[TTS] Voices sample:', JSON.stringify(voicesData).substring(0, 500));
+
+    const voices = Array.isArray(voicesData)
+      ? voicesData
+      : (voicesData as { voices?: unknown[] }).voices ?? [];
+
+    const frenchVoice = (voices as Record<string, unknown>[]).find(v =>
+      String(v.language ?? '').toLowerCase().includes('fr') ||
+      String(v.locale ?? '').toLowerCase().includes('fr') ||
+      String(v.name ?? '').toLowerCase().includes('french'),
+    );
+    const voiceId: number = Number(frenchVoice?.voice_id ?? frenchVoice?.id ?? 20303);
+    console.log('[TTS] Using voice_id:', voiceId);
+
+    // Step 2: create TTS task
+    const ttsRes = await fetch('https://client.camb.ai/apis/tts', {
       method: 'POST',
-      headers: {
-        'x-api-key': CAMB_API_KEY,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        text: cleanText,
-        language: 6,   // French — verify via GET /api/agent/tts-languages
-        gender: 0,     // 0 = female
-        age: 1,        // 1 = adult
-      }),
+      headers: cambHeaders,
+      body: JSON.stringify({ text: cleanText, voice_id: voiceId, language: 'fr' }),
     });
 
-    console.log('[TTS] CAMB.AI response status:', response.status);
+    console.log('[TTS] TTS response status:', ttsRes.status);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[TTS] CAMB.AI error:', errorText);
-      throw new Error(`CAMB.AI TTS error: ${response.status}`);
+    if (!ttsRes.ok) {
+      const err = await ttsRes.text();
+      console.error('[TTS] TTS error:', err);
+      throw new Error(`CAMB.AI error: ${ttsRes.status}`);
     }
 
-    const data = await response.json() as { task_id: string };
-    console.log('[TTS] CAMB.AI task_id:', data.task_id);
+    const ttsData = await ttsRes.json() as { task_id: string };
+    const taskId = ttsData.task_id;
+    console.log('[TTS] task_id:', taskId);
 
-    // CAMB.AI is async — poll for result
-    const taskId = data.task_id;
-    let audioUrl: string | null = null;
-    let attempts = 0;
-
-    while (!audioUrl && attempts < 15) {
+    // Step 3: poll for completion
+    let runId: string | null = null;
+    for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 2000));
-      attempts++;
-
-      const statusRes = await fetch(
-        `https://client.camb.ai/apis/tts/${taskId}`,
-        { headers: { 'x-api-key': CAMB_API_KEY } },
-      );
-
-      const statusData = await statusRes.json() as { status: string; audio_url?: string };
-      console.log('[TTS] Poll attempt', attempts, ':', statusData.status);
-
-      if (statusData.status === 'SUCCESS') {
-        audioUrl = statusData.audio_url ?? null;
-      } else if (statusData.status === 'FAILED') {
-        throw new Error('CAMB.AI TTS generation failed');
-      }
+      const statusRes = await fetch(`https://client.camb.ai/apis/tts/${taskId}`, {
+        headers: cambHeaders,
+      });
+      const statusData = await statusRes.json() as { status: string; run_id?: string };
+      console.log('[TTS] Poll', i + 1, ':', statusData.status);
+      if (statusData.status === 'SUCCESS') { runId = statusData.run_id ?? null; break; }
+      if (statusData.status === 'FAILED') throw new Error('TTS failed');
     }
 
-    if (!audioUrl) throw new Error('CAMB.AI TTS timeout');
+    if (!runId) throw new Error('TTS timeout');
 
-    const audioRes = await fetch(audioUrl);
+    // Step 4: download audio
+    const audioRes = await fetch(`https://client.camb.ai/apis/tts-result/${runId}`, {
+      headers: cambHeaders,
+    });
     const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
-
-    console.log('[TTS] Audio received, size:', audioBuffer.length, 'bytes');
+    console.log('[TTS] Audio size:', audioBuffer.length);
 
     res.set({
-      'Content-Type': 'audio/mpeg',
+      'Content-Type': 'audio/flac',
       'Content-Length': String(audioBuffer.length),
       'Cache-Control': 'no-cache',
     });
