@@ -398,8 +398,6 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
 
 // POST /api/agent/speak
 router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
-  console.log('[TTS] VOICE_ID exists:', !!process.env.ELEVENLABS_VOICE_ID);
-  console.log('[TTS] API_KEY exists:', !!process.env.ELEVENLABS_API_KEY);
   try {
     const { text } = req.body as { text: string };
 
@@ -407,8 +405,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/#{1,6}\s/g, '')
       .replace(/[*_`#]/g, '')
-      .replace(/[^\x00-\x7FÀ-ɏḀ-ỿ]/g, '')
-      .substring(0, 400)
+      .substring(0, 180)
       .trim();
 
     if (!cleanText) {
@@ -416,41 +413,17 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    const VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
-    const API_KEY = process.env.ELEVENLABS_API_KEY;
+    const encoded = encodeURIComponent(cleanText);
+    const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=fr&client=tw-ob`;
 
-    if (!VOICE_ID || !API_KEY) {
-      throw new Error('ElevenLabs credentials not configured');
-    }
-
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`,
-      {
-        method: 'POST',
-        headers: {
-          'xi-api-key': API_KEY,
-          'Content-Type': 'application/json',
-          'Accept': 'audio/mpeg',
-        },
-        body: JSON.stringify({
-          text: cleanText,
-          model_id: 'eleven_multilingual_v2',
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-            style: 0.3,
-            use_speaker_boost: true,
-          },
-        }),
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://translate.google.com',
       },
-    );
+    });
 
-    console.log('[TTS] ElevenLabs response status:', response.status);
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('ElevenLabs error:', response.status, errorText);
-      throw new Error(`ElevenLabs error: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Google TTS failed: ${response.status}`);
 
     const audioBuffer = Buffer.from(await response.arrayBuffer());
 
