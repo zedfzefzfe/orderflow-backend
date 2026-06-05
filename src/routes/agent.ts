@@ -2,6 +2,7 @@ import { Router } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
+import { supabaseAdmin } from '../lib/supabase.js';
 
 const router = Router();
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -501,16 +502,27 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     if (!runId) throw new Error('TTS timeout');
 
-    // Probe the audio endpoint — if CAMB.AI redirects to a CDN (S3/GCS),
-    // response.url will be the public CDN URL the browser can fetch directly.
-    const probeRes = await fetch(
+    // Download audio from CAMB.AI
+    const audioRes = await fetch(
       `https://client.camb.ai/apis/tts-result/${runId}`,
       { headers: cambHeaders },
     );
-    const audioUrl = probeRes.url !== `https://client.camb.ai/apis/tts-result/${runId}`
-      ? probeRes.url                        // public CDN URL — browser fetches directly
-      : `/api/agent/audio/${runId}`;        // no redirect — fall back to our proxy
-    console.log('[TTS] audioUrl:', audioUrl);
+    const contentType = audioRes.headers.get('content-type') || 'audio/flac';
+    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
+    console.log('[TTS] Downloaded audio, size:', audioBuffer.length, 'type:', contentType);
+
+    // Upload to Supabase Storage so the browser fetches from CDN (not Railway)
+    const fileName = `tts/${runId}.flac`;
+    await supabaseAdmin.storage.createBucket('tts-audio', { public: true }).catch(() => {});
+    const { error: uploadError } = await supabaseAdmin.storage
+      .from('tts-audio')
+      .upload(fileName, audioBuffer, { contentType, upsert: true });
+
+    if (uploadError) throw new Error(`Supabase upload failed: ${uploadError.message}`);
+
+    const { data: urlData } = supabaseAdmin.storage.from('tts-audio').getPublicUrl(fileName);
+    const audioUrl = urlData.publicUrl;
+    console.log('[TTS] audioUrl (Supabase CDN):', audioUrl);
     res.json({ audioUrl });
   } catch (error) {
     console.error('[TTS] Error:', error);
