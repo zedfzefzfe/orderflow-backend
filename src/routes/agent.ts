@@ -440,30 +440,11 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
       'Content-Type': 'application/json',
     };
 
-    // Step 1: find a French voice ID
-    const voicesRes = await fetch('https://client.camb.ai/apis/list-voices', {
-      headers: cambHeaders,
-    });
-    const voicesData = await voicesRes.json() as unknown;
-    console.log('[TTS] Voices sample:', JSON.stringify(voicesData).substring(0, 500));
-
-    const voices = Array.isArray(voicesData)
-      ? voicesData
-      : (voicesData as { voices?: unknown[] }).voices ?? [];
-
-    const frenchVoice = (voices as Record<string, unknown>[]).find(v =>
-      String(v.language ?? '').toLowerCase().includes('fr') ||
-      String(v.locale ?? '').toLowerCase().includes('fr') ||
-      String(v.name ?? '').toLowerCase().includes('french'),
-    );
-    const voiceId: number = Number(frenchVoice?.voice_id ?? frenchVoice?.id ?? 20303);
-    console.log('[TTS] Using voice_id:', voiceId);
-
-    // Step 2: create TTS task
+    // Step 1: create TTS task (Melanie Deschamps, French)
     const ttsRes = await fetch('https://client.camb.ai/apis/tts', {
       method: 'POST',
       headers: cambHeaders,
-      body: JSON.stringify({ text: cleanText, voice_id: voiceId, language: 'fr' }),
+      body: JSON.stringify({ text: cleanText, voice_id: 170922, language: 76 }),
     });
 
     console.log('[TTS] TTS response status:', ttsRes.status);
@@ -478,7 +459,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     const taskId = ttsData.task_id;
     console.log('[TTS] task_id:', taskId);
 
-    // Step 3: poll for completion
+    // Step 2: poll for completion
     let runId: string | null = null;
     for (let i = 0; i < 15; i++) {
       await new Promise(r => setTimeout(r, 2000));
@@ -493,7 +474,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     if (!runId) throw new Error('TTS timeout');
 
-    // Step 4: download audio
+    // Step 3: download audio
     const audioRes = await fetch(`https://client.camb.ai/apis/tts-result/${runId}`, {
       headers: cambHeaders,
     });
