@@ -478,11 +478,13 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     const audioRes = await fetch(`https://client.camb.ai/apis/tts-result/${runId}`, {
       headers: cambHeaders,
     });
+    const contentType = audioRes.headers.get('content-type') || 'audio/mpeg';
+    console.log('[TTS] CAMB.AI content-type:', contentType);
     const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
     console.log('[TTS] Audio size:', audioBuffer.length);
 
     res.set({
-      'Content-Type': 'audio/flac',
+      'Content-Type': contentType,
       'Content-Length': String(audioBuffer.length),
       'Cache-Control': 'no-cache',
     });
