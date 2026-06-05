@@ -18,9 +18,10 @@ model Business {
   trialEndsAt                 DateTime? @map("trial_ends_at")
   createdAt                   DateTime  @default(now()) @map("created_at")
 
-  users       User[]
-  orders      Order[]
-  messageLogs MessageLog[]
+  users          User[]
+  orders         Order[]
+  messageLogs    MessageLog[]
+  productCatalog ProductCatalog[]
 
   @@map("businesses")
 }
@@ -76,4 +77,16 @@ model MessageLog {
   business Business @relation(fields: [businessId], references: [id])
 
   @@map("message_logs")
+}
+
+model ProductCatalog {
+  id         String   @id @default(cuid())
+  businessId String   @map("business_id")
+  name       String
+  price      Float
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@map("product_catalog")
 }

@@ -206,6 +206,20 @@ async function processParsedOrder({
     }
   }
 
+  // Auto-fill price from product catalog if not provided by customer
+  let autoPrice: number | null = parsed.totalPrice;
+  if (!autoPrice && parsed.product) {
+    const catalogItem = await prisma.productCatalog.findFirst({
+      where: {
+        businessId: business.id,
+        name: { equals: parsed.product, mode: 'insensitive' },
+      },
+    });
+    if (catalogItem) {
+      autoPrice = catalogItem.price * (parsed.quantity || 1);
+    }
+  }
+
   const order = await prisma.order.create({
     data: {
       businessId: business.id,
@@ -215,6 +229,7 @@ async function processParsedOrder({
       quantity: parsed.quantity || 1,
       address: parsed.address,
       deliveryDate: parsed.deliveryDate,
+      totalPrice: autoPrice,
       rawMessage: messageText,
       source,
     },

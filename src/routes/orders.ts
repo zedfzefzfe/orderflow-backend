@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import * as XLSX from 'xlsx';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 
@@ -40,6 +41,69 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('List orders error:', err);
     res.status(500).json({ error: 'Failed to fetch orders' });
+  }
+});
+
+// GET /api/orders/export - CSV or Excel download
+router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { month, format = 'csv' } = req.query as { month?: string; format?: string };
+    const businessId = req.user!.businessId;
+
+    let dateFilter: { gte?: Date; lt?: Date } = {};
+    if (month && /^\d{4}-\d{2}$/.test(month)) {
+      const [year, mon] = month.split('-').map(Number);
+      dateFilter = { gte: new Date(year, mon - 1, 1), lt: new Date(year, mon, 1) };
+    }
+
+    const orders = await prisma.order.findMany({
+      where: { businessId, ...(Object.keys(dateFilter).length ? { createdAt: dateFilter } : {}) },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const rows = orders.map((o) => ({
+      Date: o.createdAt.toISOString().slice(0, 10),
+      Client: o.customerName,
+      'Téléphone': o.customerPhone,
+      Produit: o.product,
+      'Quantité': o.quantity,
+      Adresse: o.address || '',
+      Livraison: o.deliveryDate || '',
+      Statut: o.status,
+      'Prix (DH)': o.totalPrice ?? '',
+    }));
+
+    const monthLabel = month
+      ? new Date(month + '-01').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }).replace(' ', '_')
+      : 'toutes';
+    const baseFilename = `commandes_${monthLabel}`;
+
+    if (format === 'xlsx') {
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(rows);
+      XLSX.utils.book_append_sheet(wb, ws, 'Commandes');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${baseFilename}.xlsx"`);
+      res.send(buf);
+    } else {
+      const headers = ['Date', 'Client', 'Téléphone', 'Produit', 'Quantité', 'Adresse', 'Livraison', 'Statut', 'Prix (DH)'];
+      const csvLines = [
+        headers.join(','),
+        ...rows.map((r) =>
+          headers.map((h) => {
+            const val = String((r as Record<string, unknown>)[h] ?? '');
+            return val.includes(',') || val.includes('"') ? `"${val.replace(/"/g, '""')}"` : val;
+          }).join(',')
+        ),
+      ];
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${baseFilename}.csv"`);
+      res.send('﻿' + csvLines.join('\n'));
+    }
+  } catch (err) {
+    console.error('Export error:', err);
+    res.status(500).json({ error: 'Failed to export orders' });
   }
 });
 
