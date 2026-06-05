@@ -415,7 +415,7 @@ router.get('/tts-languages', async (_req, res) => {
   }
 });
 
-// GET /api/agent/audio/:runId — public, streams CAMB.AI audio to browser
+// GET /api/agent/audio/:runId — public, sends full CAMB.AI audio buffer
 router.get('/audio/:runId', async (req, res) => {
   try {
     const CAMB_API_KEY = process.env.CAMB_API_KEY;
@@ -426,16 +426,15 @@ router.get('/audio/:runId', async (req, res) => {
       { headers: { 'x-api-key': CAMB_API_KEY, 'Content-Type': 'application/json' } },
     );
 
-    const contentType = audioRes.headers.get('content-type') || 'audio/mpeg';
-    const contentLength = audioRes.headers.get('content-length');
-    console.log('[TTS] Serving audio, content-type:', contentType);
+    const buffer = Buffer.from(await audioRes.arrayBuffer());
+    const contentType = audioRes.headers.get('content-type') || 'audio/flac';
+    console.log('[TTS] Serving audio, content-type:', contentType, 'size:', buffer.length);
 
-    res.set('Content-Type', contentType);
-    if (contentLength) res.set('Content-Length', contentLength);
-    res.set('Cache-Control', 'public, max-age=3600');
-
-    const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
-    res.send(audioBuffer);
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', buffer.length); // use actual buffer size, not upstream header
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.end(buffer);
   } catch (error) {
     console.error('[TTS] audio serve error:', error);
     res.status(500).end();
