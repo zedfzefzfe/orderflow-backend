@@ -444,7 +444,7 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     const ttsRes = await fetch('https://client.camb.ai/apis/tts', {
       method: 'POST',
       headers: cambHeaders,
-      body: JSON.stringify({ text: cleanText, voice_id: 170817, language: 76 }),
+      body: JSON.stringify({ text: cleanText, voice_id: 170895, language: 76, output_format: 'mp3' }),
     });
 
     console.log('[TTS] TTS response status:', ttsRes.status);
