@@ -401,28 +401,23 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
 router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { text } = req.body as { text: string };
+    if (!text) { res.status(400).json({ error: 'text is required' }); return; }
 
-    const summaryText = (text ?? '')
+    // Strip markdown but DO NOT truncate — edge-tts handles full-length text in one call.
+    const cleanText = text
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/#{1,6}\s/g, '')
       .replace(/[*_`#]/g, '')
-      .substring(0, 200)
       .trim();
 
-    if (!summaryText) {
-      res.status(400).json({ error: 'Text requis' });
-      return;
-    }
+    console.log('[TTS] synthesizing', cleanText.length, 'chars');
 
-    const tts = new EdgeTTS(summaryText, 'fr-FR-DeniseNeural', {
+    const tts = new EdgeTTS(cleanText, 'fr-FR-DeniseNeural', {
       rate: '-5%',
       pitch: '+0Hz',
       volume: '+0%',
     });
-
-    console.log('[TTS] calling synthesize for:', summaryText.slice(0, 60));
     const result = await tts.synthesize();
-    console.log('[TTS] synthesize done, audio type:', result.audio.type);
     const audioBuffer = Buffer.from(await result.audio.arrayBuffer());
     console.log('[TTS] buffer size:', audioBuffer.length);
 
