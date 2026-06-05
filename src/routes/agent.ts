@@ -1,18 +1,7 @@
 import { Router } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
-import { TextToSpeechClient } from '@google-cloud/text-to-speech';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
-
-let _ttsClient: TextToSpeechClient | null = null;
-function getTtsClient(): TextToSpeechClient {
-  if (!_ttsClient) {
-    _ttsClient = new TextToSpeechClient({
-      apiKey: process.env.GOOGLE_TTS_API_KEY,
-    });
-  }
-  return _ttsClient;
-}
 
 const router = Router();
 const MODEL = 'claude-haiku-4-5-20251001';
@@ -409,34 +398,58 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
 
 // POST /api/agent/speak
 router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
-  const { text } = req.body as { text: string };
-  if (!text?.trim()) {
-    res.status(400).json({ error: 'Text requis' });
-    return;
-  }
-
-  const cleanText = text
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/#{1,6}\s/g, '')
-    .replace(/[*_`#]/g, '')
-    .substring(0, 500)
-    .trim();
-
   try {
-    const [response] = await getTtsClient().synthesizeSpeech({
-      input: { text: cleanText },
-      voice: {
-        languageCode: 'fr-FR',
-        name: 'fr-FR-Chirp3-HD-Achernar',
-      },
-      audioConfig: {
-        audioEncoding: 'MP3' as const,
-        speakingRate: 0.95,
-        pitch: 0.0,
-      },
-    });
+    const { text } = req.body as { text: string };
 
-    const audioBuffer = Buffer.from(response.audioContent as Uint8Array);
+    const cleanText = (text ?? '')
+      .replace(/\*\*(.*?)\*\*/g, '$1')
+      .replace(/#{1,6}\s/g, '')
+      .replace(/[*_`#]/g, '')
+      .replace(/[^\x00-\x7FÀ-ɏḀ-ỿ]/g, '')
+      .substring(0, 400)
+      .trim();
+
+    if (!cleanText) {
+      res.status(400).json({ error: 'Text requis' });
+      return;
+    }
+
+    const VOICE_ID = process.env.ELEVENLABS_VOICE_ID;
+    const API_KEY = process.env.ELEVENLABS_API_KEY;
+
+    if (!VOICE_ID || !API_KEY) {
+      throw new Error('ElevenLabs credentials not configured');
+    }
+
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': API_KEY,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg',
+        },
+        body: JSON.stringify({
+          text: cleanText,
+          model_id: 'eleven_multilingual_v2',
+          voice_settings: {
+            stability: 0.5,
+            similarity_boost: 0.75,
+            style: 0.3,
+            use_speaker_boost: true,
+          },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('ElevenLabs error:', response.status, errorText);
+      throw new Error(`ElevenLabs error: ${response.status}`);
+    }
+
+    const audioBuffer = Buffer.from(await response.arrayBuffer());
 
     res.set({
       'Content-Type': 'audio/mpeg',
@@ -445,8 +458,8 @@ router.post('/speak', requireAuth, async (req: AuthenticatedRequest, res) => {
     });
     res.send(audioBuffer);
   } catch (error) {
-    console.error('Google TTS error:', error);
-    res.status(500).json({ error: 'TTS failed' });
+    console.error('TTS error:', error);
+    res.status(500).json({ error: 'TTS failed', fallback: true });
   }
 });
 
