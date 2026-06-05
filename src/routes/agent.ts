@@ -396,8 +396,8 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
   }
 });
 
-// GET /api/agent/tts-languages — temporary debug: find CAMB.AI language IDs
-router.get('/tts-languages', requireAuth, async (req: AuthenticatedRequest, res) => {
+// GET /api/agent/tts-languages — temporary debug: find CAMB.AI language IDs (no auth required)
+router.get('/tts-languages', async (_req, res) => {
   try {
     const CAMB_API_KEY = process.env.CAMB_API_KEY;
     if (!CAMB_API_KEY) { res.status(500).json({ error: 'CAMB_API_KEY not configured' }); return; }
