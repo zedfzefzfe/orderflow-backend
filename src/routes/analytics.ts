@@ -17,8 +17,8 @@ router.get('/summary', requireAuth, async (req: AuthenticatedRequest, res) => {
       totalAllTime,
       totalThisMonth,
       totalToday,
-      revenueAgg,
-      confirmedCount,
+      estimatedRevenueAgg,
+      realRevenueAgg,
       confirmedDeliveredCount,
     ] = await Promise.all([
       prisma.order.count({ where: { businessId } }),
@@ -28,26 +28,29 @@ router.get('/summary', requireAuth, async (req: AuthenticatedRequest, res) => {
         where: { businessId, createdAt: { gte: monthStart }, totalPrice: { not: null } },
         _sum: { totalPrice: true },
       }),
-      prisma.order.count({
-        where: { businessId, status: { in: ['CONFIRMED', 'DELIVERED'] }, createdAt: { gte: monthStart }, totalPrice: { not: null } },
+      prisma.order.aggregate({
+        where: { businessId, createdAt: { gte: monthStart }, totalPrice: { not: null }, status: { in: ['CONFIRMED', 'DELIVERED'] } },
+        _sum: { totalPrice: true },
       }),
       prisma.order.count({
         where: { businessId, status: { in: ['CONFIRMED', 'DELIVERED'] } },
       }),
     ]);
 
-    const estimatedRevenue = revenueAgg._sum.totalPrice ?? 0;
+    const estimatedRevenue = estimatedRevenueAgg._sum.totalPrice ?? 0;
+    const realRevenue = realRevenueAgg._sum.totalPrice ?? 0;
     const confirmationRate = totalAllTime > 0
       ? Math.round((confirmedDeliveredCount / totalAllTime) * 100)
       : 0;
-    const averageOrderValue = confirmedCount > 0
-      ? Math.round(estimatedRevenue / confirmedCount)
+    const averageOrderValue = confirmedDeliveredCount > 0
+      ? Math.round(realRevenue / confirmedDeliveredCount)
       : 0;
 
     res.json({
       totalOrdersThisMonth: totalThisMonth,
       totalOrdersToday: totalToday,
       estimatedRevenue,
+      realRevenue,
       confirmationRate,
       totalOrdersAllTime: totalAllTime,
       averageOrderValue,

@@ -383,7 +383,7 @@ IMPORTANT: Réponds en texte brut uniquement. Pas de markdown, pas d'astérisque
       messages: [
         {
           role: 'user',
-          content: `Voici les données de ma boutique aujourd'hui: ${JSON.stringify({ businessName: context.businessName, today: context.today, thisMonth: context.thisMonth })}. Génère un résumé du jour naturel et motivant.`,
+          content: `Voici les données de ma boutique aujourd'hui: ${JSON.stringify({ businessName: context.businessName, today: context.today, thisMonth: context.thisMonth })}. Génère un résumé du jour naturel et motivant. Si le CA (chiffre d'affaires) est disponible et supérieur à zéro, mentionne-le en dirhams.`,
         },
       ],
     });

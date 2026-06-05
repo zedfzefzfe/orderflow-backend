@@ -107,31 +107,46 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// PATCH /api/orders/:id - Update order status
+// PATCH /api/orders/:id - Update order status and/or unit price
 router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { status, price } = req.body;
 
-    if (!status || !['NEW', 'CONFIRMED', 'DELIVERED', 'CANCELLED'].includes(status)) {
-      res.status(400).json({ error: 'Invalid status' });
+    if (status === undefined && price === undefined) {
+      res.status(400).json({ error: 'Nothing to update' });
       return;
     }
 
     const order = await prisma.order.findFirst({
       where: { id, businessId: req.user!.businessId },
     });
+    if (!order) { res.status(404).json({ error: 'Order not found' }); return; }
 
-    if (!order) {
-      res.status(404).json({ error: 'Order not found' });
-      return;
+    const data: Record<string, unknown> = {};
+
+    if (status !== undefined) {
+      if (!['NEW', 'CONFIRMED', 'DELIVERED', 'CANCELLED'].includes(status)) {
+        res.status(400).json({ error: 'Invalid status' }); return;
+      }
+      data.status = status;
     }
 
-    const updated = await prisma.order.update({
-      where: { id },
-      data: { status },
-    });
+    if (price !== undefined) {
+      if (price === null) {
+        data.price = null;
+        data.totalPrice = null;
+      } else {
+        const priceNum = typeof price === 'number' ? price : parseFloat(String(price));
+        if (isNaN(priceNum) || priceNum < 0) {
+          res.status(400).json({ error: 'Invalid price' }); return;
+        }
+        data.price = priceNum;
+        data.totalPrice = priceNum * order.quantity;
+      }
+    }
 
+    const updated = await prisma.order.update({ where: { id }, data });
     res.json(updated);
   } catch (err) {
     console.error('Update order error:', err);
