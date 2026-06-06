@@ -8,15 +8,19 @@ const router = Router();
 // GET /api/orders - List orders for the user's business
 router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { status, search, page = '1', limit = '50' } = req.query;
+    const { status, search, page = '1', limit = '50', dateFrom } = req.query;
     const pageNum = Math.max(1, parseInt(page as string) || 1);
-    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string) || 50));
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit as string) || 50));
     const skip = (pageNum - 1) * limitNum;
 
     const where: any = { businessId: req.user!.businessId };
 
     if (status) {
       where.status = status as string;
+    }
+
+    if (dateFrom) {
+      where.createdAt = { gte: new Date(dateFrom as string) };
     }
 
     if (search) {
