@@ -111,16 +111,11 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// PATCH /api/orders/:id - Update order status and/or unit price
+// PATCH /api/orders/:id - Update any order fields
 router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
-    const { status, price } = req.body;
-
-    if (status === undefined && price === undefined) {
-      res.status(400).json({ error: 'Nothing to update' });
-      return;
-    }
+    const { status, price, customerName, customerPhone, product, quantity, address, deliveryDate } = req.body;
 
     const order = await prisma.order.findFirst({
       where: { id, businessId: req.user!.businessId },
@@ -135,6 +130,14 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
       }
       data.status = status;
     }
+    if (customerName !== undefined) data.customerName = String(customerName).trim();
+    if (customerPhone !== undefined) data.customerPhone = String(customerPhone).trim();
+    if (product !== undefined) data.product = String(product).trim();
+    if (address !== undefined) data.address = address === '' ? null : String(address).trim();
+    if (deliveryDate !== undefined) data.deliveryDate = deliveryDate === '' ? null : String(deliveryDate).trim();
+
+    const newQty = quantity !== undefined ? parseInt(String(quantity)) : null;
+    if (newQty !== null && (!isNaN(newQty) && newQty > 0)) data.quantity = newQty;
 
     if (price !== undefined) {
       if (price === null) {
@@ -145,9 +148,13 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
         if (isNaN(priceNum) || priceNum < 0) {
           res.status(400).json({ error: 'Invalid price' }); return;
         }
+        const effectiveQty = (data.quantity as number | undefined) ?? order.quantity;
         data.price = priceNum;
-        data.totalPrice = priceNum * order.quantity;
+        data.totalPrice = priceNum * effectiveQty;
       }
+    } else if (data.quantity !== undefined && order.price !== null) {
+      // quantity changed without new price — recalculate totalPrice
+      data.totalPrice = order.price * (data.quantity as number);
     }
 
     const updated = await prisma.order.update({ where: { id }, data });
@@ -155,6 +162,22 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('Update order error:', err);
     res.status(500).json({ error: 'Failed to update order' });
+  }
+});
+
+// DELETE /api/orders/:id
+router.delete('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const order = await prisma.order.findFirst({
+      where: { id, businessId: req.user!.businessId },
+    });
+    if (!order) { res.status(404).json({ error: 'Order not found' }); return; }
+    await prisma.order.delete({ where: { id } });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('Delete order error:', err);
+    res.status(500).json({ error: 'Failed to delete order' });
   }
 });
 

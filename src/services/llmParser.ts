@@ -17,7 +17,24 @@ export interface ParsedOrder {
   totalPrice: number | null;
 }
 
-const SYSTEM_PROMPT = `Tu es un extracteur de données pour commandes d'une boutique marocaine (tout type de produit).
+function buildSystemPrompt(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const toISO = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const MONTHS_FR = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
+  const todayISO = toISO(now);
+  const todayFr = `${now.getDate()} ${MONTHS_FR[now.getMonth()]} ${now.getFullYear()}`;
+
+  const addDays = (n: number) => { const d = new Date(now); d.setDate(d.getDate() + n); return toISO(d); };
+  const nextWeekday = (target: number) => {
+    let diff = (target - now.getDay() + 7) % 7;
+    if (diff === 0) diff = 7;
+    return addDays(diff);
+  };
+
+  return `Tu es un extracteur de données pour commandes d'une boutique marocaine (tout type de produit).
+
+IMPORTANT — Date d'aujourd'hui: ${todayISO} (${todayFr})
 
 TÂCHE: Analyser le message et extraire les champs demandés. Les messages arrivent en français, arabe ou darija (dialecte marocain).
 
@@ -26,32 +43,48 @@ RÈGLES D'EXTRACTION — applique-les strictement:
 - product: EXTRAIRE tout nom de produit ou plat mentionné, quelle que soit la catégorie (nourriture, cadeaux, vêtements, etc.). Si un produit est cité, ce champ NE DOIT PAS être null.
 - quantity: nombre entier explicite, sinon 1 par défaut quand un produit est commandé
 - address: EXTRAIRE toute ville ou adresse mentionnée. Mots-clés: "livraison", "adresse", "Casa", "Rabat", "Marrakech", "lmdina", etc.
-- deliveryDate: EXTRAIRE toute mention de date ou jour. Exemples darija: "nhar lkhmis"=jeudi, "lhad"=dimanche, "ghda"/"demain"=demain, "juj ayam"=dans 2 jours, "had simana"=cette semaine.
+- deliveryDate: EXTRAIRE et CONVERTIR toute mention de date ou délai en format ISO YYYY-MM-DD. Correspondances basées sur aujourd'hui (${todayISO}):
+  • "demain" / "ghda" / "l-ghda" → ${addDays(1)}
+  • "après-demain" / "ba3d ghda" → ${addDays(2)}
+  • "dans 2 jours" / "juj ayam" → ${addDays(2)}
+  • "dans 3 jours" / "tlata ayam" → ${addDays(3)}
+  • "cette semaine" / "had simana" → ${addDays(5)}
+  • "semaine prochaine" / "simana jaya" → ${addDays(7)}
+  • "lundi" / "nhar ltnin" → ${nextWeekday(1)}
+  • "mardi" / "nhar tlt" → ${nextWeekday(2)}
+  • "mercredi" / "nhar larb3" → ${nextWeekday(3)}
+  • "jeudi" / "nhar lkhmis" → ${nextWeekday(4)}
+  • "vendredi" / "nhar jm3a" → ${nextWeekday(5)}
+  • "samedi" / "nhar sbt" → ${nextWeekday(6)}
+  • "dimanche" / "lhad" / "nhar lhad" → ${nextWeekday(0)}
+  • Date "7 juin" sans année → ${now.getFullYear()}-06-07 (si déjà passée, utilise ${now.getFullYear() + 1}-06-07)
+  • Date avec année explicite "7 juin 2027" → 2027-06-07
+  Si aucune date mentionnée → null
 - customerName: EXTRAIRE seulement si un prénom ou nom est explicitement mentionné, sinon null
 - totalPrice: prix total si le client le mentionne, sinon null
 
-EXEMPLES — message → JSON attendu:
+EXEMPLES — message → JSON attendu (avec la date du jour actuelle):
 
 "bghit 2 poulets rôtis livraison Casa"
 → {"isOrder":true,"customerName":null,"product":"poulet rôti","quantity":2,"address":"Casablanca","deliveryDate":null,"totalPrice":null}
 
 "salam bghit 2 bougies vanille livraison Rabat nhar lkhmis"
-→ {"isOrder":true,"customerName":null,"product":"bougies vanille","quantity":2,"address":"Rabat","deliveryDate":"nhar lkhmis","totalPrice":null}
+→ {"isOrder":true,"customerName":null,"product":"bougies vanille","quantity":2,"address":"Rabat","deliveryDate":"${nextWeekday(4)}","totalPrice":null}
 
 "Bonjour je voudrais 1 bouquet roses éternelles, adresse Casa Maarif, livraison demain"
-→ {"isOrder":true,"customerName":null,"product":"bouquet roses éternelles","quantity":1,"address":"Casa Maarif","deliveryDate":"demain","totalPrice":null}
+→ {"isOrder":true,"customerName":null,"product":"bouquet roses éternelles","quantity":1,"address":"Casa Maarif","deliveryDate":"${addDays(1)}","totalPrice":null}
 
 "bghit bougie oud, Casa, ghda"
-→ {"isOrder":true,"customerName":null,"product":"bougie oud","quantity":1,"address":"Casa","deliveryDate":"ghda","totalPrice":null}
+→ {"isOrder":true,"customerName":null,"product":"bougie oud","quantity":1,"address":"Casa","deliveryDate":"${addDays(1)}","totalPrice":null}
 
 "3andi tlb: juj sandwichs w wahd jus orange, livraison Marrakech"
 → {"isOrder":true,"customerName":null,"product":"sandwichs et jus orange","quantity":3,"address":"Marrakech","deliveryDate":null,"totalPrice":null}
 
 "je veux commander une robe pour Fatima, livraison Casablanca lhad"
-→ {"isOrder":true,"customerName":"Fatima","product":"robe","quantity":1,"address":"Casablanca","deliveryDate":"lhad","totalPrice":null}
+→ {"isOrder":true,"customerName":"Fatima","product":"robe","quantity":1,"address":"Casablanca","deliveryDate":"${nextWeekday(0)}","totalPrice":null}
 
 "wahd bouquet dial ward, t3awdili nhar lhad f Agadir"
-→ {"isOrder":true,"customerName":null,"product":"bouquet ward","quantity":1,"address":"Agadir","deliveryDate":"nhar lhad","totalPrice":null}
+→ {"isOrder":true,"customerName":null,"product":"bouquet ward","quantity":1,"address":"Agadir","deliveryDate":"${nextWeekday(0)}","totalPrice":null}
 
 "chhal taman dyal poulet rôti?"
 → {"isOrder":false,"customerName":null,"product":null,"quantity":null,"address":null,"deliveryDate":null,"totalPrice":null}
@@ -61,6 +94,7 @@ EXEMPLES — message → JSON attendu:
 "fin kayn livreur dyalkom?" → {"isOrder":false,"customerName":null,"product":null,"quantity":null,"address":null,"deliveryDate":null,"totalPrice":null}
 
 FORMAT DE SORTIE: JSON brut uniquement. Pas de markdown, pas de texte avant ou après, pas d'explication.`;
+}
 
 function extractJson(raw: string): string {
   const stripped = raw.replace(/```(?:json)?\n?|\n?```/g, '').trim();
@@ -105,7 +139,7 @@ async function callClaude(messageText: string): Promise<string> {
     const response = await getClient().messages.create({
       model: MODEL,
       max_tokens: 256,
-      system: SYSTEM_PROMPT,
+      system: buildSystemPrompt(),
       messages,
     });
     const content = response.content[0];
