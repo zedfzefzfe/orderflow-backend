@@ -18,10 +18,11 @@ model Business {
   trialEndsAt                 DateTime? @map("trial_ends_at")
   createdAt                   DateTime  @default(now()) @map("created_at")
 
-  users          User[]
-  orders         Order[]
-  messageLogs    MessageLog[]
-  productCatalog ProductCatalog[]
+  users                User[]
+  orders               Order[]
+  messageLogs          MessageLog[]
+  productCatalog       ProductCatalog[]
+  conversationMessages ConversationMessage[]
 
   @@map("businesses")
 }
@@ -59,6 +60,7 @@ model Order {
   totalPrice    Float?      @map("total_price")
   deliveryPrice Float?      @map("delivery_price")
   status        OrderStatus @default(NEW)
+  needsReview   Boolean     @default(false) @map("needs_review")
   rawMessage    String      @map("raw_message")
   source        String      @default("whatsapp")
   createdAt     DateTime    @default(now()) @map("created_at")
@@ -91,4 +93,20 @@ model ProductCatalog {
   business Business @relation(fields: [businessId], references: [id])
 
   @@map("product_catalog")
+}
+
+model ConversationMessage {
+  id          String   @id @default(cuid())
+  businessId  String   @map("business_id")
+  phone       String
+  role        String
+  type        String
+  content     String
+  mediaUrl    String?  @map("media_url")
+  processed   Boolean  @default(false)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@map("conversation_messages")
 }

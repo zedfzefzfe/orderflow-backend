@@ -1,13 +1,159 @@
 import { Router, Request, Response } from 'express';
 import type { Business } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
-import { parseOrderMessage } from '../services/llmParser.js';
-import { notifyOwner } from '../services/whatsapp.js';
-import type { ParsedOrder } from '../services/llmParser.js';
+import { parseOrderFromConversation } from '../services/llmParser.js';
+import { notifyOwner, sendTextToOwner } from '../services/whatsapp.js';
+import { transcribeAudio, resolveMetaMediaUrl } from '../services/transcription.js';
 
 const router = Router();
 
-// Meta webhook verification (GET)
+// ── Trigger keywords (merchant sends one of these to confirm an order) ─────────
+
+const TRIGGER_KEYWORDS = [
+  'commande confirmée',
+  'commande confirmer',
+  'commande confirmee',
+  'commande confirm',
+  '#confirmer',
+  '#commande',
+  'تأكيد الطلب',
+  'commande ok',
+];
+
+function isTriggerMessage(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  return TRIGGER_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+// ── Role detection: sender matching ownerNotifyPhone → merchant ────────────────
+
+function detectRole(senderPhone: string, business: Business): 'client' | 'merchant' {
+  if (!business.ownerNotifyPhone) return 'client';
+  const normalize = (p: string) => p.replace(/\D/g, '');
+  return normalize(senderPhone) === normalize(business.ownerNotifyPhone) ? 'merchant' : 'client';
+}
+
+// ── Persists one message to ConversationMessage table ─────────────────────────
+
+async function saveConversationMessage(
+  businessId: string,
+  phone: string,
+  role: 'client' | 'merchant',
+  type: 'text' | 'audio' | 'image',
+  content: string,
+  mediaUrl?: string,
+): Promise<void> {
+  await prisma.conversationMessage.create({
+    data: { businessId, phone, role, type, content, mediaUrl: mediaUrl || null },
+  });
+  console.log(`[convo] Saved [${role}/${type}] for phone ${phone}: "${content.slice(0, 60)}"`);
+}
+
+// ── When merchant sends trigger: find the most recent active customer ──────────
+
+async function resolveCustomerPhone(businessId: string, senderPhone: string, role: 'client' | 'merchant'): Promise<string | null> {
+  if (role === 'client') return senderPhone;
+
+  const recent = await prisma.conversationMessage.findFirst({
+    where: { businessId, role: 'client' },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (!recent) {
+    console.warn('[webhook/trigger] No active client conversation found for this business');
+    return null;
+  }
+
+  return recent.phone;
+}
+
+// ── Core trigger handler: collect conversation, parse, create order ────────────
+
+async function handleTrigger(business: Business, customerPhone: string): Promise<void> {
+  const conversation = await prisma.conversationMessage.findMany({
+    where: { businessId: business.id, phone: customerPhone },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  if (conversation.length === 0) {
+    console.warn(`[webhook/trigger] Empty conversation for ${customerPhone} — skipping`);
+    return;
+  }
+
+  const formattedConversation = conversation
+    .map((msg) => `[${msg.role.toUpperCase()}] (${msg.type}): ${msg.content}`)
+    .join('\n');
+
+  console.log(`[webhook/trigger] Parsing conversation for ${customerPhone} (${conversation.length} messages)`);
+
+  const parsed = await parseOrderFromConversation(formattedConversation);
+  console.log(`[webhook/trigger] Parsed result — confidence: ${parsed.confidence}, product: ${parsed.product}`);
+
+  // Plan limit check
+  const PLAN_LIMITS: Record<string, number> = { trial: 50, starter: 200, growth: -1, pro: -1 };
+  const limit = PLAN_LIMITS[business.plan] ?? 50;
+  if (limit !== -1) {
+    const count = await prisma.order.count({ where: { businessId: business.id } });
+    if (count >= limit) {
+      console.log(`[webhook/trigger] Order blocked for "${business.name}" — plan limit (${count}/${limit})`);
+      return;
+    }
+  }
+
+  // Auto-fill price from catalog
+  let autoPrice: number | null = parsed.price;
+  if (!autoPrice && parsed.product) {
+    const catalogItem = await prisma.productCatalog.findFirst({
+      where: { businessId: business.id, name: { equals: parsed.product, mode: 'insensitive' } },
+    });
+    if (catalogItem) {
+      autoPrice = catalogItem.price * (parsed.quantity || 1);
+    }
+  }
+
+  const orderData = {
+    businessId: business.id,
+    customerName: parsed.customerName || 'Unknown',
+    customerPhone,
+    product: parsed.product || 'À préciser',
+    quantity: parsed.quantity || 1,
+    address: parsed.address || null,
+    deliveryDate: parsed.deliveryDate || null,
+    totalPrice: autoPrice,
+    rawMessage: formattedConversation.slice(0, 5000),
+    source: 'whatsapp',
+  };
+
+  if (parsed.confidence >= 90) {
+    const order = await prisma.order.create({ data: { ...orderData, needsReview: false } });
+    console.log(`[ORDER] Created automatically — id: ${order.id}, confidence: ${parsed.confidence}`);
+    notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));
+    await markConversationProcessed(business.id, customerPhone);
+
+  } else if (parsed.confidence >= 50) {
+    const order = await prisma.order.create({ data: { ...orderData, needsReview: true } });
+    console.log(`[ORDER] Created with review flag — id: ${order.id}, confidence: ${parsed.confidence}`);
+    notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));
+    await markConversationProcessed(business.id, customerPhone);
+
+  } else {
+    console.log(`[ORDER] Not created — confidence too low: ${parsed.confidence}`);
+    sendTextToOwner(
+      business,
+      `⚠️ Commande non créée - informations insuffisantes. Vérifiez la conversation avec ${customerPhone}`,
+    ).catch((err) => console.error('[webhook/trigger] sendTextToOwner error:', err));
+  }
+}
+
+async function markConversationProcessed(businessId: string, phone: string): Promise<void> {
+  await prisma.conversationMessage.updateMany({
+    where: { businessId, phone },
+    data: { processed: true },
+  });
+}
+
+// ── Meta webhook verification (GET) ───────────────────────────────────────────
+
 router.get('/', (req: Request, res: Response): void => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -23,7 +169,8 @@ router.get('/', (req: Request, res: Response): void => {
   res.sendStatus(403);
 });
 
-// Incoming messages (POST) — handles Twilio, Meta, and YCloud payloads
+// ── Incoming messages (POST) ──────────────────────────────────────────────────
+
 router.post('/', (req: Request, res: Response): void => {
   console.log('[webhook] POST received — raw payload:', JSON.stringify(req.body));
 
@@ -52,14 +199,13 @@ router.post('/', (req: Request, res: Response): void => {
   });
 });
 
-// --- Twilio handler (synchronous — TwiML response expected) ---
+// ── Twilio handler ─────────────────────────────────────────────────────────────
 
 async function handleTwilioPayload(req: Request, res: Response): Promise<void> {
-  const messageText = req.body.Body as string;
   const senderPhone = (req.body.From as string).replace('whatsapp:', '');
-  const senderName = (req.body.ProfileName as string) || null;
-
-  console.log(`[webhook/twilio] Message from ${senderPhone} (${senderName ?? 'no name'}): "${messageText}"`);
+  const messageText = req.body.Body as string;
+  const mediaUrl0 = req.body.MediaUrl0 as string | undefined;
+  const mediaType = req.body.MediaContentType0 as string | undefined;
 
   const business = await prisma.business.findFirst({
     where: { whatsappPhoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID },
@@ -71,20 +217,50 @@ async function handleTwilioPayload(req: Request, res: Response): Promise<void> {
     return;
   }
 
+  const role = detectRole(senderPhone, business);
+  const customerPhone = await resolveCustomerPhone(business.id, senderPhone, role);
+
+  if (!customerPhone) {
+    console.warn('[webhook/twilio] Could not resolve customerPhone — skipping');
+    res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+    return;
+  }
+
+  // Determine message type and content
+  let type: 'text' | 'audio' | 'image' = 'text';
+  let content = messageText || '';
+  if (mediaUrl0 && mediaType) {
+    if (mediaType.startsWith('audio/')) {
+      type = 'audio';
+      // Twilio media URLs are signed — accessible without extra auth headers
+      const transcription = await transcribeAudio(mediaUrl0);
+      content = `[Audio transcrit]: ${transcription}`;
+      console.log('[WEBHOOK] Full conversation length after audio transcription stored');
+    } else if (mediaType.startsWith('image/')) {
+      type = 'image';
+      content = '[Image envoyée]';
+    }
+  }
+
+  await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl0);
+
+  // Also log in MessageLog for backwards compatibility
   await prisma.messageLog.create({
-    data: { businessId: business.id, fromPhone: senderPhone, body: messageText, parsed: false },
+    data: { businessId: business.id, fromPhone: senderPhone, body: messageText || content, parsed: false },
   });
 
-  const parsed = await parseOrderMessage(messageText);
-  console.log('[webhook/twilio] Parsed result:', JSON.stringify(parsed));
+  // Fire trigger asynchronously so TwiML response is not delayed
+  if (role === 'merchant' && type === 'text' && isTriggerMessage(messageText)) {
+    console.log(`[webhook/twilio] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
+    handleTrigger(business, customerPhone).catch((err) =>
+      console.error('[webhook/twilio] handleTrigger error:', err)
+    );
+  }
 
-  const replyText = await processParsedOrder({ business, parsed, senderPhone, senderName, messageText, source: 'twilio' });
-
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>\n<Response>\n  <Message>${replyText}</Message>\n</Response>`;
-  res.type('text/xml').send(twiml);
+  res.type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
 }
 
-// --- Meta handler (fire-and-forget) ---
+// ── Meta handler ───────────────────────────────────────────────────────────────
 
 async function handleMetaPayload(body: Record<string, unknown>): Promise<void> {
   if (!body.object || !body.entry) {
@@ -116,44 +292,74 @@ async function handleMetaPayload(body: Record<string, unknown>): Promise<void> {
       const messages = value.messages as Record<string, unknown>[];
 
       for (const message of messages) {
-        if (message.type !== 'text') continue;
+        const senderPhone = message.from as string;
+        const msgType = message.type as string;
+        const role = detectRole(senderPhone, business);
+        const customerPhone = await resolveCustomerPhone(business.id, senderPhone, role);
 
-        const fromPhone = message.from as string;
-        const textObj = message.text as Record<string, string> | undefined;
-        const messageBody = textObj?.body || '';
+        if (!customerPhone) {
+          console.warn(`[webhook/meta] Could not resolve customerPhone for ${senderPhone} — skipping`);
+          continue;
+        }
 
-        console.log(`[webhook/meta] Message from ${fromPhone}: "${messageBody}"`);
+        let type: 'text' | 'audio' | 'image' = 'text';
+        let content = '';
+        let mediaUrl: string | undefined;
+
+        if (msgType === 'text') {
+          const textObj = message.text as Record<string, string> | undefined;
+          content = textObj?.body || '';
+        } else if (msgType === 'audio' || msgType === 'voice') {
+          type = 'audio';
+          const audioObj = (message.audio ?? message.voice) as Record<string, string> | undefined;
+          const mediaId = audioObj?.id;
+          if (mediaId) {
+            const resolvedUrl = await resolveMetaMediaUrl(mediaId);
+            if (resolvedUrl) {
+              mediaUrl = resolvedUrl;
+              const transcription = await transcribeAudio(resolvedUrl, process.env.WHATSAPP_ACCESS_TOKEN);
+              content = `[Audio transcrit]: ${transcription}`;
+            } else {
+              content = '[Audio - URL indisponible]';
+            }
+          } else {
+            content = '[Audio]';
+          }
+        } else if (msgType === 'image') {
+          type = 'image';
+          const imageObj = message.image as Record<string, string> | undefined;
+          content = imageObj?.caption || '[Image envoyée]';
+          mediaUrl = imageObj?.id;
+        } else {
+          console.log(`[webhook/meta] Skipping unsupported message type: ${msgType}`);
+          continue;
+        }
+
+        await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl);
 
         await prisma.messageLog.create({
-          data: { businessId: business.id, fromPhone, body: messageBody, parsed: false },
+          data: { businessId: business.id, fromPhone: senderPhone, body: content, parsed: false },
         });
 
-        const parsed = await parseOrderMessage(messageBody);
-        console.log('[webhook/meta] Parsed result:', JSON.stringify(parsed));
-
-        await processParsedOrder({ business, parsed, senderPhone: fromPhone, senderName: null, messageText: messageBody, source: 'whatsapp' });
+        if (role === 'merchant' && type === 'text' && isTriggerMessage(content)) {
+          console.log(`[webhook/meta] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
+          handleTrigger(business, customerPhone).catch((err) =>
+            console.error('[webhook/meta] handleTrigger error:', err)
+          );
+        }
       }
     }
   }
 }
 
-// --- YCloud handler (fire-and-forget) ---
+// ── YCloud handler ─────────────────────────────────────────────────────────────
 
 async function handleYCloudPayload(body: Record<string, unknown>): Promise<void> {
   const msg = body.whatsappInboundMessage as Record<string, unknown>;
-  if (msg.type !== 'text') {
-    console.log('[webhook/ycloud] Skipping non-text message type:', msg.type);
-    return;
-  }
-
-  const textObj = msg.text as Record<string, string> | undefined;
-  const messageText = textObj?.body || '';
+  const msgType = msg.type as string;
   const senderPhone = msg.from as string;
   const profile = msg.customerProfile as Record<string, string> | undefined;
-  const senderName = profile?.name || null;
   const wabaId = msg.wabaId as string | undefined;
-
-  console.log(`[webhook/ycloud] Message from ${senderPhone} (${senderName ?? 'no name'}): "${messageText}"`);
 
   const business = await prisma.business.findFirst({
     where: { whatsappBusinessAccountId: wabaId },
@@ -164,98 +370,56 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
     return;
   }
 
+  const role = detectRole(senderPhone, business);
+  const customerPhone = await resolveCustomerPhone(business.id, senderPhone, role);
+
+  if (!customerPhone) {
+    console.warn(`[webhook/ycloud] Could not resolve customerPhone for ${senderPhone} — skipping`);
+    return;
+  }
+
+  let type: 'text' | 'audio' | 'image' = 'text';
+  let content = '';
+  let mediaUrl: string | undefined;
+
+  if (msgType === 'text') {
+    const textObj = msg.text as Record<string, string> | undefined;
+    content = textObj?.body || '';
+  } else if (msgType === 'audio' || msgType === 'voice') {
+    type = 'audio';
+    const audioObj = (msg.audio ?? msg.voice) as Record<string, string> | undefined;
+    mediaUrl = audioObj?.url;
+    if (mediaUrl) {
+      const transcription = await transcribeAudio(mediaUrl);
+      content = `[Audio transcrit]: ${transcription}`;
+    } else {
+      content = '[Audio]';
+    }
+  } else if (msgType === 'image') {
+    type = 'image';
+    const imageObj = msg.image as Record<string, string> | undefined;
+    content = imageObj?.caption || '[Image envoyée]';
+    mediaUrl = imageObj?.url;
+  } else {
+    console.log(`[webhook/ycloud] Skipping unsupported message type: ${msgType}`);
+    return;
+  }
+
+  const senderName = profile?.name || null;
+  console.log(`[webhook/ycloud] Message from ${senderPhone} (${senderName ?? 'no name'}) [${role}/${type}]`);
+
+  await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl);
+
   await prisma.messageLog.create({
-    data: { businessId: business.id, fromPhone: senderPhone, body: messageText, parsed: false },
+    data: { businessId: business.id, fromPhone: senderPhone, body: content, parsed: false },
   });
 
-  const parsed = await parseOrderMessage(messageText);
-  console.log('[webhook/ycloud] Parsed result:', JSON.stringify(parsed));
-
-  await processParsedOrder({ business, parsed, senderPhone, senderName, messageText, source: 'ycloud' });
-}
-
-// --- Shared order creation logic ---
-
-async function processParsedOrder({
-  business,
-  parsed,
-  senderPhone,
-  senderName,
-  messageText,
-  source,
-}: {
-  business: Business;
-  parsed: ParsedOrder;
-  senderPhone: string;
-  senderName: string | null;
-  messageText: string;
-  source: string;
-}): Promise<string> {
-  if (!parsed.isOrder) {
-    return 'Bonjour! Envoyez-nous votre commande et nous la traiterons rapidement. 😊';
+  if (role === 'merchant' && type === 'text' && isTriggerMessage(content)) {
+    console.log(`[webhook/ycloud] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
+    handleTrigger(business, customerPhone).catch((err) =>
+      console.error('[webhook/ycloud] handleTrigger error:', err)
+    );
   }
-
-  const PLAN_LIMITS: Record<string, number> = { trial: 50, starter: 200, growth: -1, pro: -1 };
-  const limit = PLAN_LIMITS[business.plan] ?? 50;
-
-  if (limit !== -1) {
-    const count = await prisma.order.count({ where: { businessId: business.id } });
-    if (count >= limit) {
-      console.log(`[webhook] Order blocked for "${business.name}" — plan limit (${count}/${limit})`);
-      return 'Désolé, la limite de commandes du plan est atteinte.';
-    }
-  }
-
-  // Auto-fill price from product catalog if not provided by customer
-  let autoPrice: number | null = parsed.totalPrice;
-  if (!autoPrice && parsed.product) {
-    const catalogItem = await prisma.productCatalog.findFirst({
-      where: {
-        businessId: business.id,
-        name: { equals: parsed.product, mode: 'insensitive' },
-      },
-    });
-    if (catalogItem) {
-      autoPrice = catalogItem.price * (parsed.quantity || 1);
-    }
-  }
-
-  const order = await prisma.order.create({
-    data: {
-      businessId: business.id,
-      customerName: senderName || parsed.customerName || 'Unknown',
-      customerPhone: senderPhone,
-      product: parsed.product || 'Unspecified',
-      quantity: parsed.quantity || 1,
-      address: parsed.address,
-      deliveryDate: parsed.deliveryDate,
-      totalPrice: autoPrice,
-      rawMessage: messageText,
-      source,
-    },
-  });
-
-  console.log(`[webhook] Order created: ${order.id} for business "${business.name}"`);
-
-  await prisma.messageLog.updateMany({
-    where: { businessId: business.id, fromPhone: senderPhone, body: messageText },
-    data: { parsed: true },
-  });
-
-  notifyOwner(business, order).catch((err) =>
-    console.error('[webhook] Failed to notify owner:', err)
-  );
-
-  return `Commande reçue ✅ ${buildOrderSummary(parsed)}`;
-}
-
-function buildOrderSummary(parsed: ParsedOrder): string {
-  const parts: string[] = [];
-  if (parsed.product) parts.push(parsed.product);
-  if (parsed.quantity && parsed.quantity > 1) parts.push(`x${parsed.quantity}`);
-  if (parsed.address) parts.push(`→ ${parsed.address}`);
-  if (parsed.deliveryDate) parts.push(`📅 ${parsed.deliveryDate}`);
-  return parts.length ? parts.join(', ') : '';
 }
 
 export default router;

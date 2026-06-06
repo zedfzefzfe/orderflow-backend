@@ -179,3 +179,96 @@ export async function parseOrderFromMessage(messageText: string): Promise<Parsed
 
 // Legacy alias for webhook compatibility
 export const parseOrderMessage = parseOrderFromMessage;
+
+// ── Conversation-level parser (called after merchant trigger) ─────────────────
+
+export interface ParsedConversationOrder {
+  customerName: string | null;
+  phone: string | null;
+  product: string | null;
+  quantity: number | null;
+  address: string | null;
+  deliveryDate: string | null;
+  price: number | null;
+  confidence: number;
+}
+
+function buildConversationSystemPrompt(): string {
+  const today = new Date().toISOString().split('T')[0];
+  return `Tu es un assistant qui extrait les informations de commande depuis une conversation WhatsApp entre un marchand et son client.
+
+La date d'aujourd'hui est: ${today}
+
+Analyse TOUTE la conversation et extrait:
+- customerName: nom du client (null si non mentionné)
+- phone: téléphone du client (null si non mentionné)
+- product: produit commandé (si photo sans nom → "À préciser", null si aucun produit)
+- quantity: quantité (défaut: 1 si un produit est identifié, sinon null)
+- address: adresse de livraison (null si non mentionnée)
+- deliveryDate: date de livraison en format ISO YYYY-MM-DD (null si non mentionnée)
+- price: prix total si mentionné (null sinon)
+- confidence: score de 0 à 100 sur la certitude que c'est bien une commande complète
+  • 90-100: produit + adresse + tous les détails clés présents
+  • 50-89: commande probable mais infos partielles (ex: pas d'adresse)
+  • 0-49: trop d'infos manquantes ou conversation ambiguë
+
+Réponds UNIQUEMENT en JSON valide, sans texte avant ou après. Si une info est manquante → null.`;
+}
+
+function parseConversationJsonSafe(text: string): ParsedConversationOrder | null {
+  try {
+    const stripped = text.replace(/```(?:json)?\n?|\n?```/g, '').trim();
+    const match = stripped.match(/\{[\s\S]*\}/);
+    const raw = JSON.parse(match ? match[0] : stripped);
+    return {
+      customerName: toStr(raw.customerName),
+      phone: toStr(raw.phone),
+      product: toStr(raw.product),
+      quantity: typeof raw.quantity === 'number' && raw.quantity > 0 ? raw.quantity : null,
+      address: toStr(raw.address),
+      deliveryDate: toStr(raw.deliveryDate),
+      price: typeof raw.price === 'number' && raw.price > 0 ? raw.price : null,
+      confidence: typeof raw.confidence === 'number' ? Math.min(100, Math.max(0, raw.confidence)) : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function parseOrderFromConversation(formattedConversation: string): Promise<ParsedConversationOrder> {
+  const system = buildConversationSystemPrompt();
+  const userMessage = `Voici la conversation complète:\n${formattedConversation}\n\nExtrait les informations de commande.`;
+
+  console.log('[llmParser] parseOrderFromConversation — conversation length:', formattedConversation.length);
+
+  try {
+    const response = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 512,
+      system,
+      messages: [{ role: 'user', content: userMessage }],
+    });
+    const content = response.content[0];
+    if (content.type !== 'text') throw new Error('Non-text response');
+
+    const parsed = parseConversationJsonSafe(content.text);
+    if (parsed) return parsed;
+
+    console.warn('[llmParser] Invalid JSON from conversation parse, retrying...');
+    const retry = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 512,
+      system,
+      messages: [{ role: 'user', content: userMessage }],
+    });
+    const retryContent = retry.content[0];
+    if (retryContent.type !== 'text') throw new Error('Non-text response on retry');
+    const retryParsed = parseConversationJsonSafe(retryContent.text);
+    if (retryParsed) return retryParsed;
+  } catch (err) {
+    console.error('[llmParser] Conversation parse error:', err);
+  }
+
+  console.warn('[llmParser] Conversation parse failed — returning zero confidence');
+  return { customerName: null, phone: null, product: null, quantity: null, address: null, deliveryDate: null, price: null, confidence: 0 };
+}

@@ -56,3 +56,41 @@ export async function notifyOwner(business: Business, order: Order): Promise<voi
     console.error('WhatsApp notification error:', err);
   }
 }
+
+export async function sendTextToOwner(business: Business, text: string): Promise<void> {
+  if (!business.ownerNotifyPhone || !business.whatsappPhoneNumberId) {
+    console.log('[whatsapp] sendTextToOwner skipped — no owner phone or phone number ID');
+    return;
+  }
+
+  const body = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: business.ownerNotifyPhone,
+    type: 'text',
+    text: { body: text },
+  };
+
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/${WHATSAPP_API_VERSION}/${business.whatsappPhoneNumberId}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[whatsapp] sendTextToOwner failed: ${response.status} ${errorText}`);
+    } else {
+      console.log(`[whatsapp] Text sent to owner ${business.ownerNotifyPhone}`);
+    }
+  } catch (err) {
+    console.error('[whatsapp] sendTextToOwner error:', err);
+  }
+}
