@@ -73,6 +73,7 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
       'Quantité': o.quantity,
       Adresse: o.address || '',
       Livraison: o.deliveryDate || '',
+      'Prix livraison (DH)': o.deliveryPrice ?? '',
       Statut: o.status,
       'Prix (DH)': o.totalPrice ?? '',
     }));
@@ -115,7 +116,7 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
 router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { id } = req.params;
-    const { status, price, customerName, customerPhone, product, quantity, address, deliveryDate } = req.body;
+    const { status, price, customerName, customerPhone, product, quantity, address, deliveryDate, deliveryPrice } = req.body;
 
     const order = await prisma.order.findFirst({
       where: { id, businessId: req.user!.businessId },
@@ -155,6 +156,18 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
     } else if (data.quantity !== undefined && order.price !== null) {
       // quantity changed without new price — recalculate totalPrice
       data.totalPrice = order.price * (data.quantity as number);
+    }
+
+    if (deliveryPrice !== undefined) {
+      if (deliveryPrice === null) {
+        data.deliveryPrice = null;
+      } else {
+        const dpNum = typeof deliveryPrice === 'number' ? deliveryPrice : parseFloat(String(deliveryPrice));
+        if (isNaN(dpNum) || dpNum < 0) {
+          res.status(400).json({ error: 'Invalid deliveryPrice' }); return;
+        }
+        data.deliveryPrice = dpNum;
+      }
     }
 
     const updated = await prisma.order.update({ where: { id }, data });

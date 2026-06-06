@@ -57,6 +57,7 @@ model Order {
   deliveryDate  String?     @map("delivery_date")
   price         Float?      @map("price")
   totalPrice    Float?      @map("total_price")
+  deliveryPrice Float?      @map("delivery_price")
   status        OrderStatus @default(NEW)
   rawMessage    String      @map("raw_message")
   source        String      @default("whatsapp")
