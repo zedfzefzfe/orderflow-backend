@@ -183,11 +183,20 @@ router.post('/', (req: Request, res: Response): void => {
     return;
   }
 
-  // YCloud payload
+  // YCloud inbound (customer → business)
   if (req.body.type === 'whatsapp.inbound_message.received' && req.body.whatsappInboundMessage) {
     res.status(200).json({ received: true });
     handleYCloudPayload(req.body).catch((err) => {
       console.error('[webhook/ycloud] Processing error:', err);
+    });
+    return;
+  }
+
+  // YCloud echo (merchant → customer, sent from the business WhatsApp account)
+  if (req.body.type === 'whatsapp.smb.message.echoes' && req.body.whatsappMessage) {
+    res.status(200).json({ received: true });
+    handleYCloudEcho(req.body).catch((err) => {
+      console.error('[webhook/ycloud/echo] Processing error:', err);
     });
     return;
   }
@@ -418,6 +427,78 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
     console.log(`[webhook/ycloud] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
     handleTrigger(business, customerPhone).catch((err) =>
       console.error('[webhook/ycloud] handleTrigger error:', err)
+    );
+  }
+}
+
+// ── YCloud echo handler (merchant outbound messages) ──────────────────────────
+// YCloud sends merchant's own messages as echo events so we can store them
+// in conversation history and detect the "commande confirmée" trigger.
+// Unlike inbound messages, we know the exact customer phone from `message.to`.
+
+async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
+  const message = body.whatsappMessage as Record<string, unknown> | undefined;
+  if (!message) {
+    console.warn('[webhook/ycloud/echo] Missing whatsappMessage field — skipping');
+    return;
+  }
+
+  const msgType = (message.type as string | undefined) || 'text';
+  const merchantPhone = message.from as string | undefined;
+  const customerPhone = message.to as string | undefined;
+  const wabaId = (message.wabaId ?? body.wabaId) as string | undefined;
+
+  if (!customerPhone || !merchantPhone) {
+    console.warn('[webhook/ycloud/echo] Missing from/to fields — skipping');
+    return;
+  }
+
+  const business = await prisma.business.findFirst({
+    where: { whatsappBusinessAccountId: wabaId },
+  });
+
+  if (!business) {
+    console.log(`[webhook/ycloud/echo] No business found for wabaId: ${wabaId}`);
+    return;
+  }
+
+  // Determine content
+  let content = '';
+  if (msgType === 'text') {
+    const textObj = message.text as Record<string, string> | undefined;
+    content = textObj?.body || '';
+  } else if (msgType === 'audio' || msgType === 'voice') {
+    const audioObj = (message.audio ?? message.voice) as Record<string, string> | undefined;
+    const audioUrl = audioObj?.url;
+    if (audioUrl) {
+      const transcription = await transcribeAudio(audioUrl);
+      content = `[Audio transcrit]: ${transcription}`;
+    } else {
+      content = '[Audio]';
+    }
+  } else if (msgType === 'image') {
+    const imageObj = message.image as Record<string, string> | undefined;
+    content = imageObj?.caption || '[Image envoyée]';
+  } else {
+    content = `[Message type: ${msgType}]`;
+  }
+
+  console.log(`[webhook/ycloud/echo] Merchant message to ${customerPhone}: "${content.slice(0, 80)}"`);
+
+  // Save as merchant message — customerPhone is the conversation key
+  await saveConversationMessage(business.id, customerPhone, 'merchant', msgType === 'audio' || msgType === 'voice' ? 'audio' : msgType === 'image' ? 'image' : 'text', content);
+
+  await prisma.messageLog.create({
+    data: { businessId: business.id, fromPhone: merchantPhone, body: content, parsed: false },
+  }).catch(() => {/* non-critical */});
+
+  const isEchoTrigger = msgType === 'text' && isTriggerMessage(content);
+  console.log(`[webhook/ycloud/echo] Is trigger: ${isEchoTrigger}`);
+
+  if (isEchoTrigger) {
+    console.log(`[TRIGGER] Commande confirmée detected from merchant! Customer phone: ${customerPhone}`);
+    handleTrigger(business, customerPhone).catch((err) =>
+      console.error('[webhook/ycloud/echo] handleTrigger error:', err)
     );
   }
 }
