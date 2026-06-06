@@ -144,25 +144,11 @@ async function handleTrigger(business: Business, customerPhone: string): Promise
     source: 'whatsapp',
   };
 
-  if (parsed.confidence >= 80) {
-    const order = await prisma.order.create({ data: { ...orderData, needsReview: false } });
-    console.log(`[ORDER] Created automatically — id: ${order.id}, confidence: ${parsed.confidence}`);
-    notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));
-    await markConversationProcessed(business.id, customerPhone);
-
-  } else if (parsed.confidence >= 35) {
-    const order = await prisma.order.create({ data: { ...orderData, needsReview: true } });
-    console.log(`[ORDER] Created with review flag — id: ${order.id}, confidence: ${parsed.confidence}`);
-    notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));
-    await markConversationProcessed(business.id, customerPhone);
-
-  } else {
-    console.log(`[ORDER] Not created — confidence too low: ${parsed.confidence}`);
-    sendTextToOwner(
-      business,
-      `⚠️ Commande non créée - informations insuffisantes. Vérifiez la conversation avec ${customerPhone}`,
-    ).catch((err) => console.error('[webhook/trigger] sendTextToOwner error:', err));
-  }
+  const needsReview = !parsed.product || !parsed.address;
+  const order = await prisma.order.create({ data: { ...orderData, needsReview } });
+  console.log(`[ORDER] Created — id: ${order.id}, product: ${order.product}, needsReview: ${needsReview}`);
+  notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));
+  await markConversationProcessed(business.id, customerPhone);
 }
 
 async function markConversationProcessed(businessId: string, phone: string): Promise<void> {
