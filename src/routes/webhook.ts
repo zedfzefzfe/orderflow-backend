@@ -416,13 +416,22 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
     content = textObj?.body || '';
   } else if (msgType === 'audio' || msgType === 'voice') {
     type = 'audio';
-    const audioObj = (msg.audio ?? msg.voice) as Record<string, string> | undefined;
-    mediaUrl = audioObj?.url;
+    const audioObj = (msg.audio ?? msg.voice) as Record<string, unknown> | undefined;
+    console.log('[GROQ] yCloud audio object:', JSON.stringify(audioObj));
+    // YCloud may use different field names depending on version — try all known variants
+    mediaUrl = (audioObj?.url ?? audioObj?.link ?? audioObj?.cdnUrl ?? audioObj?.downloadUrl) as string | undefined;
+    const mimeHint = (audioObj?.mimeType ?? audioObj?.mime_type ?? '') as string;
+    console.log('[GROQ] yCloud audio URL:', mediaUrl ?? '(not found)');
+    console.log('[GROQ] yCloud audio mime_type:', mimeHint || '(not provided)');
     if (mediaUrl) {
-      const transcription = await transcribeAudio(mediaUrl);
+      console.log('[GROQ] Attempting to transcribe yCloud audio');
+      // yCloud pre-signed URLs work without Authorization header
+      const transcription = await transcribeAudio(mediaUrl, undefined);
       content = `[Audio transcrit]: ${transcription}`;
+      console.log('[GROQ] Transcription result:', transcription.substring(0, 100));
     } else {
-      content = '[Audio]';
+      content = '[Audio - URL manquante]';
+      console.log('[GROQ] No audio URL found in yCloud message — check audioObj above for correct field name');
     }
   } else if (msgType === 'image') {
     type = 'image';
@@ -489,13 +498,16 @@ async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
     const textObj = message.text as Record<string, string> | undefined;
     content = textObj?.body || '';
   } else if (msgType === 'audio' || msgType === 'voice') {
-    const audioObj = (message.audio ?? message.voice) as Record<string, string> | undefined;
-    const audioUrl = audioObj?.url;
+    const audioObj = (message.audio ?? message.voice) as Record<string, unknown> | undefined;
+    console.log('[GROQ] yCloud echo audio object:', JSON.stringify(audioObj));
+    const audioUrl = (audioObj?.url ?? audioObj?.link ?? audioObj?.cdnUrl ?? audioObj?.downloadUrl) as string | undefined;
+    console.log('[GROQ] yCloud echo audio URL:', audioUrl ?? '(not found)');
     if (audioUrl) {
-      const transcription = await transcribeAudio(audioUrl);
+      const transcription = await transcribeAudio(audioUrl, undefined);
       content = `[Audio transcrit]: ${transcription}`;
     } else {
-      content = '[Audio]';
+      content = '[Audio - URL manquante]';
+      console.log('[GROQ] No audio URL in echo — check echo audioObj above');
     }
   } else if (msgType === 'image') {
     const imageObj = message.image as Record<string, string> | undefined;

@@ -43,8 +43,11 @@ export async function transcribeAudio(audioUrl: string, bearerToken?: string): P
       throw new Error(`Audio download failed: ${response.status} ${response.statusText}`);
     }
 
-    const mimeType = response.headers.get('content-type') || 'audio/ogg';
+    // Strip codec parameters — "audio/ogg; codecs=opus" → "audio/ogg"
+    const rawMime = response.headers.get('content-type') || 'audio/ogg';
+    const mimeType = rawMime.split(';')[0].trim();
     const ext = mimeToExt(mimeType);
+    console.log('[GROQ] Audio content-type:', rawMime, '→ using:', mimeType, `(${ext})`);
     const audioBuffer = await response.arrayBuffer();
     const audioFile = await toFile(Buffer.from(audioBuffer), `audio.${ext}`, { type: mimeType });
 
