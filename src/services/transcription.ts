@@ -56,8 +56,8 @@ export async function transcribeAudio(audioUrl: string, bearerToken?: string): P
     const transcription = await groq.audio.transcriptions.create({
       file: audioFile,
       model: 'whisper-large-v3-turbo',
-      language: 'fr',
       response_format: 'text',
+      prompt: 'Transcription de messages WhatsApp en darija marocain mélangé avec français. Noms propres marocains. Villes: Casablanca, Rabat, Marrakech, Hay Salam, Hay Mohammadi. Prénoms: Karim, Mehdi, Fatima, Houda.',
     });
 
     // response_format: 'text' returns a plain string at runtime even though
