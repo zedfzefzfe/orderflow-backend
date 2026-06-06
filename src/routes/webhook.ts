@@ -96,7 +96,17 @@ async function handleTrigger(business: Business, customerPhone: string): Promise
 
   console.log(`[webhook/trigger] Parsing conversation for ${customerPhone} (${conversation.length} messages)`);
 
-  const parsed = await parseOrderFromConversation(formattedConversation);
+  // Fetch last order to resolve references like "même adresse" or "même chose"
+  const lastOrder = await prisma.order.findFirst({
+    where: { businessId: business.id, customerPhone },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  const contextNote = lastOrder
+    ? `CONTEXTE - Dernière commande de ce client:\n- Nom: ${lastOrder.customerName}\n- Adresse: ${lastOrder.address || 'non renseignée'}\n- Téléphone: ${lastOrder.customerPhone}\n- Produit: ${lastOrder.product}\nSi le client dit "même adresse", "même chose" ou expression similaire → utilise les infos de la dernière commande.`
+    : '';
+
+  const parsed = await parseOrderFromConversation(formattedConversation, contextNote);
   console.log(`[webhook/trigger] Parsed result — confidence: ${parsed.confidence}, product: ${parsed.product}`);
 
   // Plan limit check
@@ -134,13 +144,13 @@ async function handleTrigger(business: Business, customerPhone: string): Promise
     source: 'whatsapp',
   };
 
-  if (parsed.confidence >= 90) {
+  if (parsed.confidence >= 80) {
     const order = await prisma.order.create({ data: { ...orderData, needsReview: false } });
     console.log(`[ORDER] Created automatically — id: ${order.id}, confidence: ${parsed.confidence}`);
     notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));
     await markConversationProcessed(business.id, customerPhone);
 
-  } else if (parsed.confidence >= 50) {
+  } else if (parsed.confidence >= 35) {
     const order = await prisma.order.create({ data: { ...orderData, needsReview: true } });
     console.log(`[ORDER] Created with review flag — id: ${order.id}, confidence: ${parsed.confidence}`);
     notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));

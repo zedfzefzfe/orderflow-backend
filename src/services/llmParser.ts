@@ -193,12 +193,12 @@ export interface ParsedConversationOrder {
   confidence: number;
 }
 
-function buildConversationSystemPrompt(): string {
+function buildConversationSystemPrompt(contextNote = ''): string {
   const today = new Date().toISOString().split('T')[0];
   return `Tu es un assistant qui extrait les informations de commande depuis une conversation WhatsApp entre un marchand et son client.
 
 La date d'aujourd'hui est: ${today}
-
+${contextNote ? `\n${contextNote}\n` : ''}
 Analyse TOUTE la conversation et extrait:
 - customerName: nom du client (null si non mentionné)
 - phone: téléphone du client (null si non mentionné)
@@ -208,9 +208,9 @@ Analyse TOUTE la conversation et extrait:
 - deliveryDate: date de livraison en format ISO YYYY-MM-DD (null si non mentionnée)
 - price: prix total si mentionné (null sinon)
 - confidence: score de 0 à 100 sur la certitude que c'est bien une commande complète
-  • 90-100: produit + adresse + tous les détails clés présents
-  • 50-89: commande probable mais infos partielles (ex: pas d'adresse)
-  • 0-49: trop d'infos manquantes ou conversation ambiguë
+  • 80-100: produit + adresse + tous les détails clés présents
+  • 35-79: commande probable mais infos partielles (ex: pas d'adresse, ou comblée par le contexte)
+  • 0-34: trop d'infos manquantes ou conversation ambiguë
 
 Réponds UNIQUEMENT en JSON valide, sans texte avant ou après. Si une info est manquante → null.`;
 }
@@ -235,8 +235,8 @@ function parseConversationJsonSafe(text: string): ParsedConversationOrder | null
   }
 }
 
-export async function parseOrderFromConversation(formattedConversation: string): Promise<ParsedConversationOrder> {
-  const system = buildConversationSystemPrompt();
+export async function parseOrderFromConversation(formattedConversation: string, contextNote = ''): Promise<ParsedConversationOrder> {
+  const system = buildConversationSystemPrompt(contextNote);
   const userMessage = `Voici la conversation complète:\n${formattedConversation}\n\nExtrait les informations de commande.`;
 
   console.log('[llmParser] parseOrderFromConversation — conversation length:', formattedConversation.length);
