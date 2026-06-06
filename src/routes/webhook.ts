@@ -42,11 +42,12 @@ async function saveConversationMessage(
   type: 'text' | 'audio' | 'image',
   content: string,
   mediaUrl?: string,
+  processed = false,
 ): Promise<void> {
   await prisma.conversationMessage.create({
-    data: { businessId, phone, role, type, content, mediaUrl: mediaUrl || null },
+    data: { businessId, phone, role, type, content, mediaUrl: mediaUrl || null, processed },
   });
-  console.log(`[convo] Saved [${role}/${type}] for phone ${phone}: "${content.slice(0, 60)}"`);
+  console.log(`[convo] Saved [${role}/${type}${processed ? '/processed' : ''}] for phone ${phone}: "${content.slice(0, 60)}"`);
 }
 
 // ── When merchant sends trigger: find the most recent active customer ──────────
@@ -70,13 +71,22 @@ async function resolveCustomerPhone(businessId: string, senderPhone: string, rol
 // ── Core trigger handler: collect conversation, parse, create order ────────────
 
 async function handleTrigger(business: Business, customerPhone: string): Promise<void> {
-  const conversation = await prisma.conversationMessage.findMany({
+  const totalCount = await prisma.conversationMessage.count({
     where: { businessId: business.id, phone: customerPhone },
+  });
+
+  const conversation = await prisma.conversationMessage.findMany({
+    where: { businessId: business.id, phone: customerPhone, processed: false },
     orderBy: { createdAt: 'asc' },
   });
 
+  console.log(`[CONVERSATION] Total messages for customer: ${totalCount}`);
+  console.log(`[CONVERSATION] Unprocessed messages: ${conversation.length}`);
+  console.log(`[CONVERSATION] Previous orders processed: ${totalCount - conversation.length}`);
+
   if (conversation.length === 0) {
-    console.warn(`[webhook/trigger] Empty conversation for ${customerPhone} — skipping`);
+    console.log(`[TRIGGER] No unprocessed messages found for ${customerPhone}`);
+    console.log(`[TRIGGER] Customer may have already had their order processed`);
     return;
   }
 
@@ -146,10 +156,11 @@ async function handleTrigger(business: Business, customerPhone: string): Promise
 }
 
 async function markConversationProcessed(businessId: string, phone: string): Promise<void> {
-  await prisma.conversationMessage.updateMany({
-    where: { businessId, phone },
+  const { count } = await prisma.conversationMessage.updateMany({
+    where: { businessId, phone, processed: false },
     data: { processed: true },
   });
+  console.log(`[TRIGGER] Marked ${count} messages as processed for ${phone}`);
 }
 
 // ── Meta webhook verification (GET) ───────────────────────────────────────────
@@ -241,25 +252,23 @@ async function handleTwilioPayload(req: Request, res: Response): Promise<void> {
   if (mediaUrl0 && mediaType) {
     if (mediaType.startsWith('audio/')) {
       type = 'audio';
-      // Twilio media URLs are signed — accessible without extra auth headers
       const transcription = await transcribeAudio(mediaUrl0);
       content = `[Audio transcrit]: ${transcription}`;
-      console.log('[WEBHOOK] Full conversation length after audio transcription stored');
     } else if (mediaType.startsWith('image/')) {
       type = 'image';
       content = '[Image envoyée]';
     }
   }
 
-  await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl0);
+  // Detect trigger before saving so the trigger message is saved as processed=true
+  const isTwilioTrigger = role === 'merchant' && type === 'text' && isTriggerMessage(content);
+  await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl0, isTwilioTrigger);
 
-  // Also log in MessageLog for backwards compatibility
   await prisma.messageLog.create({
     data: { businessId: business.id, fromPhone: senderPhone, body: messageText || content, parsed: false },
   });
 
-  // Fire trigger asynchronously so TwiML response is not delayed
-  if (role === 'merchant' && type === 'text' && isTriggerMessage(messageText)) {
+  if (isTwilioTrigger) {
     console.log(`[webhook/twilio] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
     handleTrigger(business, customerPhone).catch((err) =>
       console.error('[webhook/twilio] handleTrigger error:', err)
@@ -344,13 +353,14 @@ async function handleMetaPayload(body: Record<string, unknown>): Promise<void> {
           continue;
         }
 
-        await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl);
+        const isMetaTrigger = role === 'merchant' && type === 'text' && isTriggerMessage(content);
+        await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl, isMetaTrigger);
 
         await prisma.messageLog.create({
           data: { businessId: business.id, fromPhone: senderPhone, body: content, parsed: false },
         });
 
-        if (role === 'merchant' && type === 'text' && isTriggerMessage(content)) {
+        if (isMetaTrigger) {
           console.log(`[webhook/meta] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
           handleTrigger(business, customerPhone).catch((err) =>
             console.error('[webhook/meta] handleTrigger error:', err)
@@ -417,13 +427,14 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
   const senderName = profile?.name || null;
   console.log(`[webhook/ycloud] Message from ${senderPhone} (${senderName ?? 'no name'}) [${role}/${type}]`);
 
-  await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl);
+  const isYCloudTrigger = role === 'merchant' && type === 'text' && isTriggerMessage(content);
+  await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl, isYCloudTrigger);
 
   await prisma.messageLog.create({
     data: { businessId: business.id, fromPhone: senderPhone, body: content, parsed: false },
   });
 
-  if (role === 'merchant' && type === 'text' && isTriggerMessage(content)) {
+  if (isYCloudTrigger) {
     console.log(`[webhook/ycloud] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
     handleTrigger(business, customerPhone).catch((err) =>
       console.error('[webhook/ycloud] handleTrigger error:', err)
@@ -485,15 +496,18 @@ async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
 
   console.log(`[webhook/ycloud/echo] Merchant message to ${customerPhone}: "${content.slice(0, 80)}"`);
 
-  // Save as merchant message — customerPhone is the conversation key
-  await saveConversationMessage(business.id, customerPhone, 'merchant', msgType === 'audio' || msgType === 'voice' ? 'audio' : msgType === 'image' ? 'image' : 'text', content);
+  const echoType: 'text' | 'audio' | 'image' =
+    msgType === 'audio' || msgType === 'voice' ? 'audio' : msgType === 'image' ? 'image' : 'text';
+
+  const isEchoTrigger = echoType === 'text' && isTriggerMessage(content);
+  console.log(`[webhook/ycloud/echo] Is trigger: ${isEchoTrigger}`);
+
+  // Save with processed=true when it's the trigger so handleTrigger ignores it
+  await saveConversationMessage(business.id, customerPhone, 'merchant', echoType, content, undefined, isEchoTrigger);
 
   await prisma.messageLog.create({
     data: { businessId: business.id, fromPhone: merchantPhone, body: content, parsed: false },
   }).catch(() => {/* non-critical */});
-
-  const isEchoTrigger = msgType === 'text' && isTriggerMessage(content);
-  console.log(`[webhook/ycloud/echo] Is trigger: ${isEchoTrigger}`);
 
   if (isEchoTrigger) {
     console.log(`[TRIGGER] Commande confirmée detected from merchant! Customer phone: ${customerPhone}`);
