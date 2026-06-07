@@ -181,57 +181,42 @@ export async function parseOrderFromMessage(messageText: string): Promise<Parsed
 export const parseOrderMessage = parseOrderFromMessage;
 
 // ── Client message classifier ─────────────────────────────────────────────────
-// Classifies a single client message into one of five categories so the system
-// can progressively collect name / address / date across multiple messages.
+// Extracts ALL order fields present in a single client message so one message
+// like "Fatima, Casa, samedi" fills name + address + date in one shot.
 
 export interface ClientMessageClassification {
-  type: 'name' | 'address' | 'date' | 'phone' | 'other';
-  value: string | null;
+  name: string | null;
+  address: string | null;
+  date: string | null;
+  phone: string | null;
 }
 
-const VALID_TYPES = ['name', 'address', 'date', 'phone', 'other'] as const;
-
 export async function classifyClientMessage(message: string): Promise<ClientMessageClassification> {
-  const fallback: ClientMessageClassification = { type: 'other', value: null };
+  const fallback: ClientMessageClassification = { name: null, address: null, date: null, phone: null };
 
   try {
     const response = await getClient().messages.create({
       model: MODEL,
-      max_tokens: 100,
+      max_tokens: 150,
       messages: [{
         role: 'user',
-        content: `Classifie ce message WhatsApp d'un client marocain.
+        content: `Analyse ce message WhatsApp et extrait TOUTES les informations présentes.
 
 Message: "${message}"
 
-IMPORTANT: Respond ONLY with valid JSON.
-No markdown, no backticks, no explanation.
-Just the raw JSON object.
-
-{"type": "name"|"address"|"date"|"phone"|"other", "value": "valeur extraite ou null"}
-
-Règles:
-- "name": prénom/nom (ex: "Fatima Zahra", "Karim", "محمد")
-- "address": adresse/ville/quartier (ex: "Hay Mohammadi Casa", "Rabat Agdal", "حي السلام")
-- "date": date/jour (ex: "samedi", "demain", "8 juin", "السبت", "غدا")
-- "phone": numéro de téléphone (ex: "0661234567", "+212661234567")
-- "other": question, discussion, emoji, remerciement (ex: "wach kayna rouge?", "merci", "ok")
+Réponds UNIQUEMENT en JSON:
+{"name":"nom extrait ou null","address":"adresse extraite ou null","date":"date extraite ou null","phone":"téléphone extrait ou null"}
 
 Exemples:
-"Fatima Zahra" → {"type":"name","value":"Fatima Zahra"}
-"Hay Mohammadi bloc 5 casa" → {"type":"address","value":"Hay Mohammadi bloc 5 casa"}
-"samedi 8 juin" → {"type":"date","value":"samedi 8 juin"}
-"wach kayna livraison gratuite?" → {"type":"other","value":null}
-"okay merci" → {"type":"other","value":null}
-"0661234567" → {"type":"phone","value":"0661234567"}
-"فاطمة الزهراء" → {"type":"name","value":"فاطمة الزهراء"}
-"حي المحمدي الدار البيضاء" → {"type":"address","value":"حي المحمدي الدار البيضاء"}
-"السبت" → {"type":"date","value":"السبت"}
-"محمد الإدريسي" → {"type":"name","value":"محمد الإدريسي"}
-"شارع الحسن الثاني الرباط" → {"type":"address","value":"شارع الحسن الثاني الرباط"}
-"غدا" → {"type":"date","value":"غدا"}
-"wach kayna?" → {"type":"other","value":null}
-"شكراً" → {"type":"other","value":null}`,
+"Fatima Zahra, Casa Hay Mohammadi, samedi 8 juin" → {"name":"Fatima Zahra","address":"Casa Hay Mohammadi","date":"samedi 8 juin","phone":null}
+"Karim" → {"name":"Karim","address":null,"date":null,"phone":null}
+"Hay Mohammadi Casa" → {"name":null,"address":"Hay Mohammadi Casa","date":null,"phone":null}
+"samedi" → {"name":null,"address":null,"date":"samedi","phone":null}
+"wach kayna livraison gratuite?" → {"name":null,"address":null,"date":null,"phone":null}
+"Fatima, 0661234567, Rabat, demain" → {"name":"Fatima","address":"Rabat","date":"demain","phone":"0661234567"}
+"فاطمة الزهراء، حي المحمدي الدار البيضاء، السبت" → {"name":"فاطمة الزهراء","address":"حي المحمدي الدار البيضاء","date":"السبت","phone":null}
+
+IMPORTANT: Respond ONLY with valid JSON. No markdown, no backticks.`,
       }],
     });
 
@@ -249,8 +234,12 @@ Exemples:
       if (!jsonMatch) return fallback;
       const parsed = JSON.parse(jsonMatch[0]);
 
-      if (!VALID_TYPES.includes(parsed.type)) return fallback;
-      return { type: parsed.type, value: toStr(parsed.value) };
+      return {
+        name:    toStr(parsed.name),
+        address: toStr(parsed.address),
+        date:    toStr(parsed.date),
+        phone:   toStr(parsed.phone),
+      };
     } catch (error) {
       console.error('[llmParser] JSON parse error:', (error as Error).message);
       return fallback;

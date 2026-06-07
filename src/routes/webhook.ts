@@ -532,18 +532,20 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
     if (pendingOrder) {
       console.log('[FLOW] Pending order waiting for client info:', pendingOrder.id);
 
-      const classified = await classifyClientMessage(content);
-      console.log('[AI] Classified:', classified.type, '→', classified.value);
+      const result = await classifyClientMessage(content);
+      console.log('[AI] Classified:', result);
 
-      if (classified.type === 'other') {
+      const hasInfo = result.name || result.address || result.date || result.phone;
+
+      if (!hasInfo) {
         console.log('[FLOW] Chat message ignored — not order info');
       } else {
         // Only fill fields that are not yet collected
         const updateData: Record<string, string> = {};
-        if (classified.type === 'name'    && !pendingOrder.customerName  && classified.value) updateData.customerName  = classified.value;
-        if (classified.type === 'address' && !pendingOrder.address       && classified.value) updateData.address       = classified.value;
-        if (classified.type === 'date'    && !pendingOrder.deliveryDate  && classified.value) updateData.deliveryDate  = classified.value;
-        if (classified.type === 'phone'   && !pendingOrder.phone         && classified.value) updateData.phone         = classified.value;
+        if (result.name    && !pendingOrder.customerName) updateData.customerName = result.name;
+        if (result.address && !pendingOrder.address)      updateData.address      = result.address;
+        if (result.date    && !pendingOrder.deliveryDate) updateData.deliveryDate = result.date;
+        if (result.phone   && !pendingOrder.phone)        updateData.phone        = result.phone;
 
         if (Object.keys(updateData).length > 0) {
           await prisma.pendingOrder.update({ where: { id: pendingOrder.id }, data: updateData });
