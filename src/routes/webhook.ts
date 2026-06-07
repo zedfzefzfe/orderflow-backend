@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import type { Business } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { isClientFormResponse } from '../services/llmParser.js';
-import { notifyOwner, sendTextToOwner } from '../services/whatsapp.js';
+import { notifyOwner } from '../services/whatsapp.js';
 import { transcribeAudio, resolveMetaMediaUrl } from '../services/transcription.js';
 
 const router = Router();
@@ -91,51 +91,42 @@ async function markConversationProcessed(businessId: string, phone: string): Pro
   console.log(`[TRIGGER] Marked ${count} messages as processed for ${phone}`);
 }
 
-// ── Outbound WhatsApp helpers ──────────────────────────────────────────────────
+// ── Outbound WhatsApp via yCloud ───────────────────────────────────────────────
 
-async function sendWhatsAppMessage(toPhone: string, text: string, businessId: string): Promise<void> {
-  const business = await prisma.business.findUnique({ where: { id: businessId } });
-  if (!business?.whatsappPhoneNumberId) {
-    console.warn('[sendWhatsAppMessage] No phoneNumberId configured for business:', businessId);
-    return;
-  }
-  const body = {
-    messaging_product: 'whatsapp',
-    recipient_type: 'individual',
-    to: toPhone,
-    type: 'text',
-    text: { body: text },
-  };
+async function sendWhatsAppMessage(to: string, message: string, _businessId: string): Promise<void> {
+  const toFormatted = to.startsWith('+') ? to : `+${to}`;
   try {
-    const response = await fetch(
-      `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION || 'v18.0'}/${business.whatsappPhoneNumberId}/messages`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-        },
-        body: JSON.stringify(body),
-      }
-    );
+    const response = await fetch('https://api.ycloud.com/v2/whatsapp/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-API-Key': process.env.YCLOUD_API_KEY || '',
+      },
+      body: JSON.stringify({
+        from: process.env.YCLOUD_WHATSAPP_NUMBER || '',
+        to: toFormatted,
+        type: 'text',
+        text: { body: message },
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const err = await response.text();
-      console.error(`[sendWhatsAppMessage] Failed ${response.status}: ${err}`);
+      console.error('[yCloud] Send failed:', JSON.stringify(data));
     } else {
-      console.log(`[sendWhatsAppMessage] Sent to ${toPhone}`);
+      console.log('[yCloud] Message sent to:', to);
     }
-  } catch (err) {
-    console.error('[sendWhatsAppMessage] Error:', err);
+  } catch (error) {
+    console.error('[yCloud] Send error:', error);
   }
 }
 
 async function sendWhatsAppMessageToMerchant(text: string, businessId: string): Promise<void> {
   const business = await prisma.business.findUnique({ where: { id: businessId } });
-  if (!business) {
-    console.warn('[sendWhatsAppMessageToMerchant] Business not found:', businessId);
+  if (!business?.ownerNotifyPhone) {
+    console.warn('[sendWhatsAppMessageToMerchant] No ownerNotifyPhone for business:', businessId);
     return;
   }
-  await sendTextToOwner(business, text);
+  await sendWhatsAppMessage(business.ownerNotifyPhone, text, businessId);
 }
 
 // ── Trigger message parser ─────────────────────────────────────────────────────
