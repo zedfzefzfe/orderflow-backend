@@ -26,11 +26,14 @@ function isTriggerMessage(text: string): boolean {
 }
 
 // ── Role detection: sender matching ownerNotifyPhone → merchant ────────────────
+// Compare last 9 digits so +212625869380 and 0625869380 are treated as equal.
 
 function detectRole(senderPhone: string, business: Business): 'client' | 'merchant' {
   if (!business.ownerNotifyPhone) return 'client';
-  const normalize = (p: string) => p.replace(/\D/g, '');
-  return normalize(senderPhone) === normalize(business.ownerNotifyPhone) ? 'merchant' : 'client';
+  const last9 = (p: string) => p.replace(/\D/g, '').slice(-9);
+  const match = last9(senderPhone) === last9(business.ownerNotifyPhone);
+  console.log(`[role] sender=${senderPhone} owner=${business.ownerNotifyPhone} last9=${last9(senderPhone)}/${last9(business.ownerNotifyPhone)} match=${match}`);
+  return match ? 'merchant' : 'client';
 }
 
 // ── Persists one message to ConversationMessage table ─────────────────────────
@@ -445,6 +448,9 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
   const senderPhone = msg.from as string;
   const profile = msg.customerProfile as Record<string, string> | undefined;
   const wabaId = msg.wabaId as string | undefined;
+
+  // Diagnostic — tells us the exact event shape hitting this handler
+  console.log(`[webhook/ycloud] inbound event | from=${senderPhone} | to=${msg.to ?? '?'} | type=${msgType} | wabaId=${wabaId}`);
 
   const business = await prisma.business.findFirst({
     where: { whatsappBusinessAccountId: wabaId },
