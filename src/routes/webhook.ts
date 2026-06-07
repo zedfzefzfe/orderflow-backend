@@ -140,7 +140,7 @@ function parseTriggerDetails(lines: string[]) {
     return !low.includes('commande confirm') && !low.includes('votre commande');
   });
 
-  // Product = first line that has no price/delivery/label markers
+  // Product = first line that has no price/delivery markers
   const productLine = details.find(l =>
     !/\d+\s*dh/i.test(l) &&
     !/livraison/i.test(l) &&
@@ -148,17 +148,17 @@ function parseTriggerDetails(lines: string[]) {
     l.trim().length > 0
   ) || null;
 
-  // Price line: contains digits + dh but is NOT livraison
-  // Prefer a bare "290dh" line; fall back to "Prix 290 dh"
-  const priceLine =
-    details.find(l => /\d+\s*dh/i.test(l) && !/livraison/i.test(l) && !/prix/i.test(l)) ||
-    details.find(l => /prix\s*\d+/i.test(l) || (/\d+\s*dh/i.test(l) && !/livraison/i.test(l)));
+  // Price = first line with digits + dh that isn't a delivery line
+  const priceLine = details.find(l => /\d+\s*dh/i.test(l) && !/livraison/i.test(l));
+  const price = priceLine ? parseInt(priceLine.match(/(\d+)/)?.[1] || '0') : null;
+
+  console.log('[PARSER] Price line:', priceLine, '→ price:', price);
 
   const deliveryLine = details.find(l => /livraison/i.test(l));
 
   return {
     product: productLine,
-    price: priceLine ? parseInt(priceLine.match(/(\d+)/)?.[1] || '0') : null,
+    price,
     deliveryPrice: deliveryLine ? parseInt(deliveryLine.match(/(\d+)/)?.[1] || '0') : 0,
     quantity: 1,
   };
@@ -583,6 +583,7 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
         // Create order once the three required fields are all present
         if (updated?.customerName && updated?.address && updated?.deliveryDate) {
           const clientPhone = updated.phone || customerPhone;
+          console.log('[ORDER] Price from pending:', updated.price);
           const total = (updated.price || 0) + (updated.deliveryPrice || 0);
 
           const order = await prisma.order.create({
@@ -595,6 +596,7 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
               address: updated.address,
               deliveryDate: updated.deliveryDate,
               price: updated.price || null,
+              totalPrice: updated.price || null,
               deliveryPrice: updated.deliveryPrice || 0,
               status: 'CONFIRMED',
               needsReview: false,
