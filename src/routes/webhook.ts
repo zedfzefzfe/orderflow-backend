@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import type { Business } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
-import { isClientFormResponse } from '../services/llmParser.js';
+import { classifyClientMessage } from '../services/llmParser.js';
 import { notifyOwner } from '../services/whatsapp.js';
 import { transcribeAudio, resolveMetaMediaUrl } from '../services/transcription.js';
 
@@ -518,9 +518,10 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
   const senderName = profile?.name || null;
   console.log(`[webhook/ycloud] Message from ${senderPhone} (${senderName ?? 'no name'}) [${role}/${type}]`);
 
-  // ── Client form-response detection ─────────────────────────────────────────
-  // If a pending order is waiting for this client's info, use Claude Haiku to
-  // check whether the message is a delivery form response, and if so create the order.
+  // ── Progressive client info collection ────────────────────────────────────
+  // Each client message is classified by Claude Haiku (name / address / date /
+  // phone / other).  Fields are stored one by one on the PendingOrder.
+  // Once name + address + date are all collected the order is created.
 
   if (role === 'client' && type === 'text') {
     const pendingOrder = await prisma.pendingOrder.findFirst({
@@ -531,61 +532,81 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
     if (pendingOrder) {
       console.log('[FLOW] Pending order waiting for client info:', pendingOrder.id);
 
-      const { isResponse, name, phone, address, deliveryDate } = await isClientFormResponse(content);
+      const classified = await classifyClientMessage(content);
+      console.log('[AI] Classified:', classified.type, '→', classified.value);
 
-      if (!isResponse) {
-        console.log('[FLOW] Message ignored — Claude says not a form response');
+      if (classified.type === 'other') {
+        console.log('[FLOW] Chat message ignored — not order info');
       } else {
-        console.log('[FLOW] Valid form response — creating order:', { name, phone, address, deliveryDate });
+        // Only fill fields that are not yet collected
+        const updateData: Record<string, string> = {};
+        if (classified.type === 'name'    && !pendingOrder.customerName  && classified.value) updateData.customerName  = classified.value;
+        if (classified.type === 'address' && !pendingOrder.address       && classified.value) updateData.address       = classified.value;
+        if (classified.type === 'date'    && !pendingOrder.deliveryDate  && classified.value) updateData.deliveryDate  = classified.value;
+        if (classified.type === 'phone'   && !pendingOrder.phone         && classified.value) updateData.phone         = classified.value;
 
-        const clientPhone = phone || customerPhone;
+        if (Object.keys(updateData).length > 0) {
+          await prisma.pendingOrder.update({ where: { id: pendingOrder.id }, data: updateData });
+          console.log('[FLOW] Updated pending order with:', updateData);
+        }
 
-        const order = await prisma.order.create({
-          data: {
-            businessId: business.id,
-            customerName: name || 'Client WhatsApp',
-            customerPhone: clientPhone,
-            product: pendingOrder.product || 'À préciser',
-            quantity: 1,
-            address: address || null,
-            deliveryDate: deliveryDate || null,
-            price: pendingOrder.price || null,
-            deliveryPrice: pendingOrder.deliveryPrice || 0,
-            status: 'CONFIRMED',
-            needsReview: !address || !name,
-            rawMessage: content,
-            source: 'whatsapp',
-          },
+        // Reload to get the latest combined state
+        const updated = await prisma.pendingOrder.findUnique({ where: { id: pendingOrder.id } });
+
+        console.log('[FLOW] Collection progress:', {
+          name:    updated?.customerName  || 'missing',
+          address: updated?.address       || 'missing',
+          date:    updated?.deliveryDate  || 'missing',
         });
 
-        console.log('[ORDER] Created:', order.id);
+        // Create order once the three required fields are all present
+        if (updated?.customerName && updated?.address && updated?.deliveryDate) {
+          const clientPhone = updated.phone || customerPhone;
+          const total = (updated.price || 0) + (updated.deliveryPrice || 0);
 
-        await prisma.pendingOrder.update({
-          where: { id: pendingOrder.id },
-          data: { status: 'COMPLETED' },
-        });
+          const order = await prisma.order.create({
+            data: {
+              businessId: business.id,
+              customerName: updated.customerName,
+              customerPhone: clientPhone,
+              product: updated.product || 'À préciser',
+              quantity: 1,
+              address: updated.address,
+              deliveryDate: updated.deliveryDate,
+              price: updated.price || null,
+              deliveryPrice: updated.deliveryPrice || 0,
+              status: 'CONFIRMED',
+              needsReview: false,
+              rawMessage: content,
+              source: 'whatsapp',
+            },
+          });
 
-        const total = ((pendingOrder.price || 0) + (pendingOrder.deliveryPrice || 0));
+          await prisma.pendingOrder.update({
+            where: { id: pendingOrder.id },
+            data: { status: 'COMPLETED' },
+          });
 
-        const confirmation = `✅ Commande confirmée ! 🌸
+          const confirmation = `✅ Commande confirmée ! 🌸
 تم تأكيد طلبك !
 
 👤 ${order.customerName}
-📦 ${order.product}
-💰 Prix : ${pendingOrder.price ? pendingOrder.price + ' DH' : 'À confirmer'}
-🚚 Livraison : ${pendingOrder.deliveryPrice ? pendingOrder.deliveryPrice + ' DH' : 'Gratuite 🎁'}
+📦 ${updated.product || 'À préciser'}
+💰 ${updated.price ? updated.price + ' DH' : 'À confirmer'}
+🚚 Livraison : ${updated.deliveryPrice ? updated.deliveryPrice + ' DH' : 'Gratuite 🎁'}
 💵 Total : ${total > 0 ? total + ' DH' : 'À confirmer'}
-📍 ${order.address || 'À confirmer'}
-🗓️ ${order.deliveryDate || 'À confirmer'}
+📍 ${order.address}
+🗓️ ${order.deliveryDate}
 
 Merci pour votre confiance ! 🙏
 شكراً على ثقتكم !`;
 
-        await sendWhatsAppMessage(customerPhone, confirmation, business.id);
-        console.log('[CONFIRM] Sent to client:', customerPhone);
+          await sendWhatsAppMessage(customerPhone, confirmation, business.id);
+          console.log('[ORDER] Created and confirmed:', order.id);
 
-        notifyOwner(business, order).catch((err) => console.error('[FLOW] notifyOwner error:', err));
-        await markConversationProcessed(business.id, customerPhone);
+          notifyOwner(business, order).catch((err) => console.error('[FLOW] notifyOwner error:', err));
+          await markConversationProcessed(business.id, customerPhone);
+        }
       }
     }
   }
