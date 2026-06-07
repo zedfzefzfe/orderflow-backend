@@ -204,7 +204,10 @@ export async function classifyClientMessage(message: string): Promise<ClientMess
 
 Message: "${message}"
 
-Réponds UNIQUEMENT en JSON:
+IMPORTANT: Respond ONLY with valid JSON.
+No markdown, no backticks, no explanation.
+Just the raw JSON object.
+
 {"type": "name"|"address"|"date"|"phone"|"other", "value": "valeur extraite ou null"}
 
 Règles:
@@ -220,20 +223,38 @@ Exemples:
 "samedi 8 juin" → {"type":"date","value":"samedi 8 juin"}
 "wach kayna livraison gratuite?" → {"type":"other","value":null}
 "okay merci" → {"type":"other","value":null}
-"0661234567" → {"type":"phone","value":"0661234567"}`,
+"0661234567" → {"type":"phone","value":"0661234567"}
+"فاطمة الزهراء" → {"type":"name","value":"فاطمة الزهراء"}
+"حي المحمدي الدار البيضاء" → {"type":"address","value":"حي المحمدي الدار البيضاء"}
+"السبت" → {"type":"date","value":"السبت"}
+"محمد الإدريسي" → {"type":"name","value":"محمد الإدريسي"}
+"شارع الحسن الثاني الرباط" → {"type":"address","value":"شارع الحسن الثاني الرباط"}
+"غدا" → {"type":"date","value":"غدا"}
+"wach kayna?" → {"type":"other","value":null}
+"شكراً" → {"type":"other","value":null}`,
       }],
     });
 
     const raw = response.content[0];
     if (raw.type !== 'text') return fallback;
 
-    const stripped = raw.text.replace(/```(?:json)?\n?|\n?```/g, '').trim();
-    const match = stripped.match(/\{[\s\S]*\}/);
-    if (!match) return fallback;
-    const parsed = JSON.parse(match[0]);
+    try {
+      const cleanText = raw.text
+        .replace(/```json/g, '')
+        .replace(/```/g, '')
+        .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // remove control chars
+        .trim();
 
-    if (!VALID_TYPES.includes(parsed.type)) return fallback;
-    return { type: parsed.type, value: toStr(parsed.value) };
+      const jsonMatch = cleanText.match(/\{[^{}]*\}/);
+      if (!jsonMatch) return fallback;
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      if (!VALID_TYPES.includes(parsed.type)) return fallback;
+      return { type: parsed.type, value: toStr(parsed.value) };
+    } catch (error) {
+      console.error('[llmParser] JSON parse error:', (error as Error).message);
+      return fallback;
+    }
   } catch (err) {
     console.error('[llmParser] classifyClientMessage error:', err);
     return fallback;

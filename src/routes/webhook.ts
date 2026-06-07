@@ -704,8 +704,21 @@ async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
   }).catch(() => {/* non-critical */});
 
   if (isEchoTrigger) {
-    console.log(`[TRIGGER] Commande confirmée detected from merchant! Customer phone: ${customerPhone}`);
-    handleTrigger(business, customerPhone, content).catch((err) =>
+    // message.to is the business number — look up the actual client from conversation history
+    const lastClientMessage = await prisma.conversationMessage.findFirst({
+      where: {
+        businessId: business.id,
+        role: 'client',
+        processed: false,
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const resolvedCustomerPhone = lastClientMessage?.phone || customerPhone;
+
+    console.log('[TRIGGER] Customer phone from last message:', resolvedCustomerPhone);
+    console.log(`[TRIGGER] Commande confirmée detected from merchant! Customer phone: ${resolvedCustomerPhone}`);
+    handleTrigger(business, resolvedCustomerPhone, content).catch((err) =>
       console.error('[webhook/ycloud/echo] handleTrigger error:', err)
     );
   }
