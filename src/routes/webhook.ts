@@ -26,13 +26,25 @@ function isTriggerMessage(text: string): boolean {
 }
 
 // ── Role detection: sender matching ownerNotifyPhone → merchant ────────────────
-// Compare last 9 digits so +212625869380 and 0625869380 are treated as equal.
+// Normalize to digits-only E.164 so all MA formats compare equal:
+//   +212625869380  → 212625869380
+//    212625869380  → 212625869380
+//      0625869380  → 212625869380  (local 0X → 212X)
+
+function normPhone(p: string): string {
+  const d = p.replace(/\D/g, '');
+  return d.length === 10 && d.startsWith('0') ? '212' + d.slice(1) : d;
+}
 
 function detectRole(senderPhone: string, business: Business): 'client' | 'merchant' {
-  if (!business.ownerNotifyPhone) return 'client';
-  const last9 = (p: string) => p.replace(/\D/g, '').slice(-9);
-  const match = last9(senderPhone) === last9(business.ownerNotifyPhone);
-  console.log(`[role] sender=${senderPhone} owner=${business.ownerNotifyPhone} last9=${last9(senderPhone)}/${last9(business.ownerNotifyPhone)} match=${match}`);
+  if (!business.ownerNotifyPhone) {
+    console.warn('[role] ownerNotifyPhone is NOT set for business:', business.id, '— all senders treated as clients');
+    return 'client';
+  }
+  const normSender = normPhone(senderPhone);
+  const normOwner  = normPhone(business.ownerNotifyPhone);
+  const match = normSender === normOwner;
+  console.log(`[role] sender=${senderPhone}(${normSender}) owner=${business.ownerNotifyPhone}(${normOwner}) match=${match}`);
   return match ? 'merchant' : 'client';
 }
 
@@ -460,6 +472,15 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
     console.log(`[webhook/ycloud] No business found for wabaId: ${wabaId}`);
     return;
   }
+
+  // Debug — lets us verify what phone fields are stored so we can diagnose role-detection failures
+  console.log('[DEBUG] Business phones:', {
+    id: business.id,
+    name: business.name,
+    ownerNotifyPhone: business.ownerNotifyPhone,
+    whatsappPhoneNumberId: business.whatsappPhoneNumberId,
+    whatsappBusinessAccountId: business.whatsappBusinessAccountId,
+  });
 
   const role = detectRole(senderPhone, business);
   const customerPhone = await resolveCustomerPhone(business.id, senderPhone, role);
