@@ -109,3 +109,19 @@ model ConversationMessage {
 
   @@map("conversation_messages")
 }
+
+model PendingOrder {
+  id            String   @id @default(cuid())
+  businessId    String
+  customerPhone String
+  customerName  String?
+  phone         String?
+  address       String?
+  deliveryDate  String?
+  product       String?
+  price         Float?
+  deliveryPrice Float?
+  status        String   @default("WAITING_CLIENT_INFO")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}

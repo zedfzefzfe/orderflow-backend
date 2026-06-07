@@ -180,6 +180,89 @@ export async function parseOrderFromMessage(messageText: string): Promise<Parsed
 // Legacy alias for webhook compatibility
 export const parseOrderMessage = parseOrderFromMessage;
 
+// ── Client form-response detector ────────────────────────────────────────────
+// Determines if a client WhatsApp message is a reply to the delivery formulaire
+// (name / address / date) or just ordinary chat.
+
+export interface ClientFormResponse {
+  isResponse: boolean;
+  name: string | null;
+  phone: string | null;
+  address: string | null;
+  deliveryDate: string | null;
+}
+
+const FORM_DETECTION_SYSTEM = `Tu analyses des messages WhatsApp pour déterminer si un client répond à un formulaire de livraison.
+
+Le client a reçu une demande avec les champs : Nom, Adresse, Date de livraison (Téléphone optionnel).
+
+TÂCHE: Détermine si ce message est une réponse au formulaire (isResponse: true) ou une simple conversation (isResponse: false), et extrait les informations si présentes.
+
+Les messages peuvent être en français, arabe dialectal (darija) ou arabe classique.
+
+RÈGLES:
+- isResponse = true si le message contient AU MOINS une adresse OU une date de livraison
+- isResponse = false si c'est une question, salutation, ou conversation normale sans info de livraison
+- name: prénom/nom mentionné, null sinon
+- phone: numéro marocain (+212 ou 06/07...), null sinon
+- address: toute adresse ou ville mentionnée, null sinon
+- deliveryDate: toute mention de date ou jour (laisser telle quelle, ne pas convertir en ISO), null sinon
+
+EXEMPLES:
+"Fatima Zahra\nHay Mohammadi Bloc 5 Casablanca\nSamedi 8 juin"
+→ {"isResponse":true,"name":"Fatima Zahra","phone":null,"address":"Hay Mohammadi Bloc 5 Casablanca","deliveryDate":"Samedi 8 juin"}
+
+"محمد الأمين\nحي السلام الدار البيضاء\nالجمعة"
+→ {"isResponse":true,"name":"محمد الأمين","phone":null,"address":"حي السلام الدار البيضاء","deliveryDate":"الجمعة"}
+
+"Khadija\n0661234567\nCasa Maarif\ndemain"
+→ {"isResponse":true,"name":"Khadija","phone":"0661234567","address":"Casa Maarif","deliveryDate":"demain"}
+
+"سميرة\nدرب عمر كازا\nنهار الجمعة"
+→ {"isResponse":true,"name":"سميرة","phone":null,"address":"درب عمر كازا","deliveryDate":"نهار الجمعة"}
+
+"Bonjour c'est quoi le prix ?"
+→ {"isResponse":false,"name":null,"phone":null,"address":null,"deliveryDate":null}
+
+"ok merci"
+→ {"isResponse":false,"name":null,"phone":null,"address":null,"deliveryDate":null}
+
+"wach kayn livraison ?"
+→ {"isResponse":false,"name":null,"phone":null,"address":null,"deliveryDate":null}
+
+FORMAT: JSON brut uniquement, sans markdown, sans texte avant ou après.`;
+
+export async function isClientFormResponse(messageText: string): Promise<ClientFormResponse> {
+  const fallback: ClientFormResponse = { isResponse: false, name: null, phone: null, address: null, deliveryDate: null };
+
+  try {
+    const response = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 200,
+      system: FORM_DETECTION_SYSTEM,
+      messages: [{ role: 'user', content: messageText }],
+    });
+    const content = response.content[0];
+    if (content.type !== 'text') return fallback;
+
+    const stripped = content.text.replace(/```(?:json)?\n?|\n?```/g, '').trim();
+    const match = stripped.match(/\{[\s\S]*\}/);
+    if (!match) return fallback;
+    const raw = JSON.parse(match[0]);
+
+    return {
+      isResponse: !!raw.isResponse,
+      name: toStr(raw.name),
+      phone: toStr(raw.phone),
+      address: toStr(raw.address),
+      deliveryDate: toStr(raw.deliveryDate),
+    };
+  } catch (err) {
+    console.error('[llmParser] isClientFormResponse error:', err);
+    return fallback;
+  }
+}
+
 // ── Conversation-level parser (called after merchant trigger) ─────────────────
 
 export interface ParsedConversationOrder {

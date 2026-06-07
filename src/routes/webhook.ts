@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import type { Business } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
-import { parseOrderFromConversation } from '../services/llmParser.js';
+import { isClientFormResponse } from '../services/llmParser.js';
 import { notifyOwner, sendTextToOwner } from '../services/whatsapp.js';
 import { transcribeAudio, resolveMetaMediaUrl } from '../services/transcription.js';
 
@@ -68,95 +68,171 @@ async function resolveCustomerPhone(businessId: string, senderPhone: string, rol
   return recent.phone;
 }
 
-// ── Core trigger handler: collect conversation, parse, create order ────────────
-
-async function handleTrigger(business: Business, customerPhone: string): Promise<void> {
-  const totalCount = await prisma.conversationMessage.count({
-    where: { businessId: business.id, phone: customerPhone },
-  });
-
-  const conversation = await prisma.conversationMessage.findMany({
-    where: { businessId: business.id, phone: customerPhone, processed: false },
-    orderBy: { createdAt: 'asc' },
-  });
-
-  console.log(`[CONVERSATION] Total messages for customer: ${totalCount}`);
-  console.log(`[CONVERSATION] Unprocessed messages: ${conversation.length}`);
-  console.log(`[CONVERSATION] Previous orders processed: ${totalCount - conversation.length}`);
-
-  if (conversation.length === 0) {
-    console.log(`[TRIGGER] No unprocessed messages found for ${customerPhone}`);
-    console.log(`[TRIGGER] Customer may have already had their order processed`);
-    return;
-  }
-
-  const formattedConversation = conversation
-    .map((msg) => `[${msg.role.toUpperCase()}] (${msg.type}): ${msg.content}`)
-    .join('\n');
-
-  console.log(`[webhook/trigger] Parsing conversation for ${customerPhone} (${conversation.length} messages)`);
-
-  // Fetch last order to resolve references like "même adresse" or "même chose"
-  const lastOrder = await prisma.order.findFirst({
-    where: { businessId: business.id, customerPhone },
-    orderBy: { createdAt: 'desc' },
-  });
-
-  const contextNote = lastOrder
-    ? `CONTEXTE - Dernière commande de ce client:\n- Nom: ${lastOrder.customerName}\n- Adresse: ${lastOrder.address || 'non renseignée'}\n- Téléphone: ${lastOrder.customerPhone}\n- Produit: ${lastOrder.product}\nSi le client dit "même adresse", "même chose" ou expression similaire → utilise les infos de la dernière commande.`
-    : '';
-
-  const parsed = await parseOrderFromConversation(formattedConversation, contextNote);
-  console.log(`[webhook/trigger] Parsed result — confidence: ${parsed.confidence}, product: ${parsed.product}`);
-
-  // Plan limit check
-  const PLAN_LIMITS: Record<string, number> = { trial: 50, starter: 200, growth: -1, pro: -1 };
-  const limit = PLAN_LIMITS[business.plan] ?? 50;
-  if (limit !== -1) {
-    const count = await prisma.order.count({ where: { businessId: business.id } });
-    if (count >= limit) {
-      console.log(`[webhook/trigger] Order blocked for "${business.name}" — plan limit (${count}/${limit})`);
-      return;
-    }
-  }
-
-  // Auto-fill price from catalog
-  let autoPrice: number | null = parsed.price;
-  if (!autoPrice && parsed.product) {
-    const catalogItem = await prisma.productCatalog.findFirst({
-      where: { businessId: business.id, name: { equals: parsed.product, mode: 'insensitive' } },
-    });
-    if (catalogItem) {
-      autoPrice = catalogItem.price * (parsed.quantity || 1);
-    }
-  }
-
-  const orderData = {
-    businessId: business.id,
-    customerName: parsed.customerName || 'Unknown',
-    customerPhone,
-    product: parsed.product || 'À préciser',
-    quantity: parsed.quantity || 1,
-    address: parsed.address || null,
-    deliveryDate: parsed.deliveryDate || null,
-    totalPrice: autoPrice,
-    rawMessage: formattedConversation.slice(0, 5000),
-    source: 'whatsapp',
-  };
-
-  const needsReview = !parsed.product || !parsed.address;
-  const order = await prisma.order.create({ data: { ...orderData, needsReview } });
-  console.log(`[ORDER] Created — id: ${order.id}, product: ${order.product}, needsReview: ${needsReview}`);
-  notifyOwner(business, order).catch((err) => console.error('[webhook/trigger] notifyOwner error:', err));
-  await markConversationProcessed(business.id, customerPhone);
-}
-
 async function markConversationProcessed(businessId: string, phone: string): Promise<void> {
   const { count } = await prisma.conversationMessage.updateMany({
     where: { businessId, phone, processed: false },
     data: { processed: true },
   });
   console.log(`[TRIGGER] Marked ${count} messages as processed for ${phone}`);
+}
+
+// ── Outbound WhatsApp helpers ──────────────────────────────────────────────────
+
+async function sendWhatsAppMessage(toPhone: string, text: string, businessId: string): Promise<void> {
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  if (!business?.whatsappPhoneNumberId) {
+    console.warn('[sendWhatsAppMessage] No phoneNumberId configured for business:', businessId);
+    return;
+  }
+  const body = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to: toPhone,
+    type: 'text',
+    text: { body: text },
+  };
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION || 'v18.0'}/${business.whatsappPhoneNumberId}/messages`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    if (!response.ok) {
+      const err = await response.text();
+      console.error(`[sendWhatsAppMessage] Failed ${response.status}: ${err}`);
+    } else {
+      console.log(`[sendWhatsAppMessage] Sent to ${toPhone}`);
+    }
+  } catch (err) {
+    console.error('[sendWhatsAppMessage] Error:', err);
+  }
+}
+
+async function sendWhatsAppMessageToMerchant(text: string, businessId: string): Promise<void> {
+  const business = await prisma.business.findUnique({ where: { id: businessId } });
+  if (!business) {
+    console.warn('[sendWhatsAppMessageToMerchant] Business not found:', businessId);
+    return;
+  }
+  await sendTextToOwner(business, text);
+}
+
+// ── Trigger message parser ─────────────────────────────────────────────────────
+
+function parseTriggerDetails(lines: string[]) {
+  const details = lines.filter(l => !l.toLowerCase().includes('commande confirm'));
+  const productLine = details[0] || null;
+  const priceLine = details.find(l => /\d+\s*dh/i.test(l) && !/livraison/i.test(l));
+  const deliveryLine = details.find(l => /livraison/i.test(l));
+  const quantityLine = details.find(l => /^x?\d+$/i.test(l.trim()));
+  return {
+    product: productLine,
+    price: priceLine ? parseInt(priceLine.match(/(\d+)/)?.[1] || '0') : null,
+    deliveryPrice: deliveryLine ? parseInt(deliveryLine.match(/(\d+)/)?.[1] || '0') : 0,
+    quantity: quantityLine ? parseInt(quantityLine.match(/(\d+)/)?.[1] || '1') : 1,
+  };
+}
+
+// ── Core trigger handler: single-trigger order flow ────────────────────────────
+// Merchant sends ONE trigger with product details → formulaire goes to client.
+// No second trigger needed — client response creates the order directly.
+
+async function handleTrigger(business: Business, customerPhone: string, messageText: string): Promise<void> {
+  const businessId = business.id;
+
+  // Strip trigger keyword line, parse product details from the rest
+  const lines = messageText
+    .split('\n')
+    .map(l => l.trim())
+    .filter(l => l && !l.toLowerCase().includes('commande confirm'));
+
+  const productInfo = parseTriggerDetails(lines);
+  console.log('[TRIGGER] Product info from merchant:', productInfo);
+
+  // Require at least a product name
+  if (!productInfo.product) {
+    console.log('[TRIGGER] No product found — sending format hint to merchant');
+    await sendWhatsAppMessageToMerchant(
+      `⚠️ Format incorrect. Envoyez :\n"commande confirmée\n[nom du produit]\n[prix]dh\nlivraison [prix livraison]dh"\n\nExemple :\ncommande confirmée\nbouquet rose rouge\n299dh\nlivraison 25dh`,
+      businessId
+    );
+    return;
+  }
+
+  // Plan limit check — applies once the order is ultimately created, but
+  // we block early so the merchant knows before waiting for client info.
+  const PLAN_LIMITS: Record<string, number> = { trial: 50, starter: 200, growth: -1, pro: -1 };
+  const limit = PLAN_LIMITS[business.plan] ?? 50;
+  if (limit !== -1) {
+    const count = await prisma.order.count({ where: { businessId } });
+    if (count >= limit) {
+      console.log(`[TRIGGER] Order blocked for "${business.name}" — plan limit (${count}/${limit})`);
+      return;
+    }
+  }
+
+  // Upsert pending order — update if one exists for this customer, create otherwise
+  const existingPending = await prisma.pendingOrder.findFirst({
+    where: {
+      businessId,
+      customerPhone,
+      status: { in: ['WAITING_CLIENT_INFO', 'WAITING_MERCHANT_CONFIRMATION'] },
+    },
+  });
+
+  if (existingPending) {
+    await prisma.pendingOrder.update({
+      where: { id: existingPending.id },
+      data: {
+        product: productInfo.product,
+        price: productInfo.price,
+        deliveryPrice: productInfo.deliveryPrice,
+        status: 'WAITING_CLIENT_INFO',
+      },
+    });
+    console.log('[TRIGGER] Updated existing pending order:', existingPending.id);
+  } else {
+    await prisma.pendingOrder.create({
+      data: {
+        businessId,
+        customerPhone,
+        product: productInfo.product,
+        price: productInfo.price,
+        deliveryPrice: productInfo.deliveryPrice,
+        status: 'WAITING_CLIENT_INFO',
+      },
+    });
+    console.log('[TRIGGER] Created new pending order');
+  }
+
+  // Send formulaire to client — includes product details so they know what they ordered
+  const formulaire = `✅ Commande notée ! 🌸
+تم تسجيل طلبك !
+
+📦 ${productInfo.product}
+💰 ${productInfo.price ? productInfo.price + ' DH' : 'Prix à confirmer'}
+🚚 Livraison : ${productInfo.deliveryPrice ? productInfo.deliveryPrice + ' DH' : 'Gratuite 🎁'}
+
+Pour finaliser, envoyez en un message :
+لإتمام الطلب، أرسل في رسالة واحدة :
+
+👤 Votre nom / اسمك
+📍 Votre adresse / عنوانك
+🗓️ Date souhaitée / تاريخ التوصيل
+
+Exemple :
+Fatima Zahra
+Hay Mohammadi Bloc 5 Casablanca
+Samedi 8 juin`;
+
+  await sendWhatsAppMessage(customerPhone, formulaire, businessId);
+  console.log('[FLOW] Formulaire sent to client:', customerPhone);
 }
 
 // ── Meta webhook verification (GET) ───────────────────────────────────────────
@@ -181,7 +257,6 @@ router.get('/', (req: Request, res: Response): void => {
 router.post('/', (req: Request, res: Response): void => {
   console.log('[webhook] POST received — raw payload:', JSON.stringify(req.body));
 
-  // Twilio sends urlencoded with Body + From starting with "whatsapp:"
   if (typeof req.body.Body === 'string' && typeof req.body.From === 'string' && req.body.From.startsWith('whatsapp:')) {
     handleTwilioPayload(req, res).catch((err) => {
       console.error('[webhook/twilio] Processing error:', err);
@@ -190,7 +265,6 @@ router.post('/', (req: Request, res: Response): void => {
     return;
   }
 
-  // YCloud inbound (customer → business)
   if (req.body.type === 'whatsapp.inbound_message.received' && req.body.whatsappInboundMessage) {
     res.status(200).json({ received: true });
     handleYCloudPayload(req.body).catch((err) => {
@@ -199,7 +273,6 @@ router.post('/', (req: Request, res: Response): void => {
     return;
   }
 
-  // YCloud echo (merchant → customer, sent from the business WhatsApp account)
   if (req.body.type === 'whatsapp.smb.message.echoes' && req.body.whatsappMessage) {
     res.status(200).json({ received: true });
     handleYCloudEcho(req.body).catch((err) => {
@@ -208,7 +281,6 @@ router.post('/', (req: Request, res: Response): void => {
     return;
   }
 
-  // Meta payload — acknowledge immediately (Meta requires response within 5s)
   res.sendStatus(200);
   handleMetaPayload(req.body).catch((err) => {
     console.error('[webhook/meta] Processing error:', err);
@@ -242,7 +314,6 @@ async function handleTwilioPayload(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  // Determine message type and content
   let type: 'text' | 'audio' | 'image' = 'text';
   let content = messageText || '';
   if (mediaUrl0 && mediaType) {
@@ -256,7 +327,6 @@ async function handleTwilioPayload(req: Request, res: Response): Promise<void> {
     }
   }
 
-  // Detect trigger before saving so the trigger message is saved as processed=true
   const isTwilioTrigger = role === 'merchant' && type === 'text' && isTriggerMessage(content);
   await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl0, isTwilioTrigger);
 
@@ -266,7 +336,7 @@ async function handleTwilioPayload(req: Request, res: Response): Promise<void> {
 
   if (isTwilioTrigger) {
     console.log(`[webhook/twilio] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
-    handleTrigger(business, customerPhone).catch((err) =>
+    handleTrigger(business, customerPhone, content).catch((err) =>
       console.error('[webhook/twilio] handleTrigger error:', err)
     );
   }
@@ -358,7 +428,7 @@ async function handleMetaPayload(body: Record<string, unknown>): Promise<void> {
 
         if (isMetaTrigger) {
           console.log(`[webhook/meta] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
-          handleTrigger(business, customerPhone).catch((err) =>
+          handleTrigger(business, customerPhone, content).catch((err) =>
             console.error('[webhook/meta] handleTrigger error:', err)
           );
         }
@@ -367,7 +437,7 @@ async function handleMetaPayload(body: Record<string, unknown>): Promise<void> {
   }
 }
 
-// ── YCloud handler ─────────────────────────────────────────────────────────────
+// ── YCloud inbound handler (client → business) ─────────────────────────────────
 
 async function handleYCloudPayload(body: Record<string, unknown>): Promise<void> {
   const msg = body.whatsappInboundMessage as Record<string, unknown>;
@@ -404,14 +474,12 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
     type = 'audio';
     const audioObj = (msg.audio ?? msg.voice) as Record<string, unknown> | undefined;
     console.log('[GROQ] yCloud audio object:', JSON.stringify(audioObj));
-    // YCloud may use different field names depending on version — try all known variants
     mediaUrl = (audioObj?.url ?? audioObj?.link ?? audioObj?.cdnUrl ?? audioObj?.downloadUrl) as string | undefined;
     const mimeHint = (audioObj?.mimeType ?? audioObj?.mime_type ?? '') as string;
     console.log('[GROQ] yCloud audio URL:', mediaUrl ?? '(not found)');
     console.log('[GROQ] yCloud audio mime_type:', mimeHint || '(not provided)');
     if (mediaUrl) {
       console.log('[GROQ] Attempting to transcribe yCloud audio');
-      // yCloud pre-signed URLs work without Authorization header
       const transcription = await transcribeAudio(mediaUrl, undefined);
       content = `[Audio transcrit]: ${transcription}`;
       console.log('[GROQ] Transcription result:', transcription.substring(0, 100));
@@ -432,6 +500,78 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
   const senderName = profile?.name || null;
   console.log(`[webhook/ycloud] Message from ${senderPhone} (${senderName ?? 'no name'}) [${role}/${type}]`);
 
+  // ── Client form-response detection ─────────────────────────────────────────
+  // If a pending order is waiting for this client's info, use Claude Haiku to
+  // check whether the message is a delivery form response, and if so create the order.
+
+  if (role === 'client' && type === 'text') {
+    const pendingOrder = await prisma.pendingOrder.findFirst({
+      where: { businessId: business.id, customerPhone, status: 'WAITING_CLIENT_INFO' },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (pendingOrder) {
+      console.log('[FLOW] Pending order waiting for client info:', pendingOrder.id);
+
+      const { isResponse, name, phone, address, deliveryDate } = await isClientFormResponse(content);
+
+      if (!isResponse) {
+        console.log('[FLOW] Message ignored — Claude says not a form response');
+      } else {
+        console.log('[FLOW] Valid form response — creating order:', { name, phone, address, deliveryDate });
+
+        const clientPhone = phone || customerPhone;
+
+        const order = await prisma.order.create({
+          data: {
+            businessId: business.id,
+            customerName: name || 'Client WhatsApp',
+            customerPhone: clientPhone,
+            product: pendingOrder.product || 'À préciser',
+            quantity: 1,
+            address: address || null,
+            deliveryDate: deliveryDate || null,
+            price: pendingOrder.price || null,
+            deliveryPrice: pendingOrder.deliveryPrice || 0,
+            status: 'CONFIRMED',
+            needsReview: !address || !name,
+            rawMessage: content,
+            source: 'whatsapp',
+          },
+        });
+
+        console.log('[ORDER] Created:', order.id);
+
+        await prisma.pendingOrder.update({
+          where: { id: pendingOrder.id },
+          data: { status: 'COMPLETED' },
+        });
+
+        const total = ((pendingOrder.price || 0) + (pendingOrder.deliveryPrice || 0));
+
+        const confirmation = `✅ Commande confirmée ! 🌸
+تم تأكيد طلبك !
+
+👤 ${order.customerName}
+📦 ${order.product}
+💰 Prix : ${pendingOrder.price ? pendingOrder.price + ' DH' : 'À confirmer'}
+🚚 Livraison : ${pendingOrder.deliveryPrice ? pendingOrder.deliveryPrice + ' DH' : 'Gratuite 🎁'}
+💵 Total : ${total > 0 ? total + ' DH' : 'À confirmer'}
+📍 ${order.address || 'À confirmer'}
+🗓️ ${order.deliveryDate || 'À confirmer'}
+
+Merci pour votre confiance ! 🙏
+شكراً على ثقتكم !`;
+
+        await sendWhatsAppMessage(customerPhone, confirmation, business.id);
+        console.log('[CONFIRM] Sent to client:', customerPhone);
+
+        notifyOwner(business, order).catch((err) => console.error('[FLOW] notifyOwner error:', err));
+        await markConversationProcessed(business.id, customerPhone);
+      }
+    }
+  }
+
   const isYCloudTrigger = role === 'merchant' && type === 'text' && isTriggerMessage(content);
   await saveConversationMessage(business.id, customerPhone, role, type, content, mediaUrl, isYCloudTrigger);
 
@@ -441,7 +581,7 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
 
   if (isYCloudTrigger) {
     console.log(`[webhook/ycloud] Trigger detected from merchant ${senderPhone} for customer ${customerPhone}`);
-    handleTrigger(business, customerPhone).catch((err) =>
+    handleTrigger(business, customerPhone, content).catch((err) =>
       console.error('[webhook/ycloud] handleTrigger error:', err)
     );
   }
@@ -450,7 +590,6 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
 // ── YCloud echo handler (merchant outbound messages) ──────────────────────────
 // YCloud sends merchant's own messages as echo events so we can store them
 // in conversation history and detect the "commande confirmée" trigger.
-// Unlike inbound messages, we know the exact customer phone from `message.to`.
 
 async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
   const message = body.whatsappMessage as Record<string, unknown> | undefined;
@@ -478,7 +617,6 @@ async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
     return;
   }
 
-  // Determine content
   let content = '';
   if (msgType === 'text') {
     const textObj = message.text as Record<string, string> | undefined;
@@ -510,7 +648,6 @@ async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
   const isEchoTrigger = echoType === 'text' && isTriggerMessage(content);
   console.log(`[webhook/ycloud/echo] Is trigger: ${isEchoTrigger}`);
 
-  // Save with processed=true when it's the trigger so handleTrigger ignores it
   await saveConversationMessage(business.id, customerPhone, 'merchant', echoType, content, undefined, isEchoTrigger);
 
   await prisma.messageLog.create({
@@ -519,7 +656,7 @@ async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
 
   if (isEchoTrigger) {
     console.log(`[TRIGGER] Commande confirmée detected from merchant! Customer phone: ${customerPhone}`);
-    handleTrigger(business, customerPhone).catch((err) =>
+    handleTrigger(business, customerPhone, content).catch((err) =>
       console.error('[webhook/ycloud/echo] handleTrigger error:', err)
     );
   }
