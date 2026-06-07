@@ -14,6 +14,9 @@ const TRIGGER_KEYWORDS = [
   'commande confirmer',
   'commande confirmee',
   'commande confirm',
+  'votre commande confirm',
+  'commande est confirm',
+  'order confirmed',
   '#confirmer',
   '#commande',
   'تأكيد الطلب',
@@ -132,16 +135,32 @@ async function sendWhatsAppMessageToMerchant(text: string, businessId: string): 
 // ── Trigger message parser ─────────────────────────────────────────────────────
 
 function parseTriggerDetails(lines: string[]) {
-  const details = lines.filter(l => !l.toLowerCase().includes('commande confirm'));
-  const productLine = details[0] || null;
-  const priceLine = details.find(l => /\d+\s*dh/i.test(l) && !/livraison/i.test(l));
+  const details = lines.filter(l => {
+    const low = l.toLowerCase();
+    return !low.includes('commande confirm') && !low.includes('votre commande');
+  });
+
+  // Product = first line that has no price/delivery/label markers
+  const productLine = details.find(l =>
+    !/\d+\s*dh/i.test(l) &&
+    !/livraison/i.test(l) &&
+    !/prix/i.test(l) &&
+    l.trim().length > 0
+  ) || null;
+
+  // Price line: contains digits + dh but is NOT livraison
+  // Prefer a bare "290dh" line; fall back to "Prix 290 dh"
+  const priceLine =
+    details.find(l => /\d+\s*dh/i.test(l) && !/livraison/i.test(l) && !/prix/i.test(l)) ||
+    details.find(l => /prix\s*\d+/i.test(l) || (/\d+\s*dh/i.test(l) && !/livraison/i.test(l)));
+
   const deliveryLine = details.find(l => /livraison/i.test(l));
-  const quantityLine = details.find(l => /^x?\d+$/i.test(l.trim()));
+
   return {
     product: productLine,
     price: priceLine ? parseInt(priceLine.match(/(\d+)/)?.[1] || '0') : null,
     deliveryPrice: deliveryLine ? parseInt(deliveryLine.match(/(\d+)/)?.[1] || '0') : 0,
-    quantity: quantityLine ? parseInt(quantityLine.match(/(\d+)/)?.[1] || '1') : 1,
+    quantity: 1,
   };
 }
 
@@ -156,7 +175,7 @@ async function handleTrigger(business: Business, customerPhone: string, messageT
   const lines = messageText
     .split('\n')
     .map(l => l.trim())
-    .filter(l => l && !l.toLowerCase().includes('commande confirm'));
+    .filter(l => l && !l.toLowerCase().includes('commande confirm') && !l.toLowerCase().includes('votre commande'));
 
   const productInfo = parseTriggerDetails(lines);
   console.log('[TRIGGER] Product info from merchant:', productInfo);
