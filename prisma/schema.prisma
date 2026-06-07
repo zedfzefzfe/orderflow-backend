@@ -41,7 +41,6 @@ model User {
 }
 
 enum OrderStatus {
-  NEW
   CONFIRMED
   DELIVERED
   CANCELLED
@@ -59,7 +58,7 @@ model Order {
   price         Float?      @map("price")
   totalPrice    Float?      @map("total_price")
   deliveryPrice Float?      @map("delivery_price")
-  status        OrderStatus @default(NEW)
+  status        OrderStatus @default(CONFIRMED)
   needsReview   Boolean     @default(false) @map("needs_review")
   rawMessage    String      @map("raw_message")
   source        String      @default("whatsapp")

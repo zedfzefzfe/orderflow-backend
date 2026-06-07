@@ -126,7 +126,7 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
     const data: Record<string, unknown> = {};
 
     if (status !== undefined) {
-      if (!['NEW', 'CONFIRMED', 'DELIVERED', 'CANCELLED'].includes(status)) {
+      if (!['CONFIRMED', 'DELIVERED', 'CANCELLED'].includes(status)) {
         res.status(400).json({ error: 'Invalid status' }); return;
       }
       data.status = status;

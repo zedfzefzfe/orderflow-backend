@@ -38,15 +38,16 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
     weekStart.setDate(now.getDate() - diffToMonday);
     weekStart.setHours(0, 0, 0, 0);
 
-    const [totalOrders, ordersThisWeek, pendingOrders, statusCounts] = await Promise.all([
+    const [totalOrders, ordersThisWeek, pendingOrders, statusCounts, needsReviewCount] = await Promise.all([
       prisma.order.count({ where: baseWhere }),
       prisma.order.count({ where: { businessId, createdAt: { gte: weekStart } } }),
-      prisma.order.count({ where: { ...baseWhere, status: { in: ['NEW', 'CONFIRMED'] } } }),
+      prisma.order.count({ where: { ...baseWhere, status: 'CONFIRMED' } }),
       prisma.order.groupBy({
         by: ['status'],
         where: baseWhere,
         _count: { status: true },
       }),
+      prisma.order.count({ where: { businessId, needsReview: true } }),
     ]);
 
     const statusBreakdown = statusCounts.reduce<Record<string, number>>((acc, curr) => {
@@ -54,7 +55,7 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       return acc;
     }, {});
 
-    res.json({ totalOrders, ordersThisWeek, pendingOrders, statusBreakdown });
+    res.json({ totalOrders, ordersThisWeek, pendingOrders, needsReviewCount, statusBreakdown });
   } catch (err) {
     console.error('Stats error:', err);
     res.status(500).json({ error: 'Failed to fetch stats' });

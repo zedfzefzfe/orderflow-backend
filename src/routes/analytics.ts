@@ -24,8 +24,6 @@ router.get('/summary', requireAuth, async (req: AuthenticatedRequest, res) => {
     const businessId = req.user!.businessId;
     const days = parseInt(req.query.period as string) || 30;
     const { start, prevStart, prevEnd } = getPeriodRange(days);
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-
     const [
       totalCount,
       confirmedCount,
@@ -34,7 +32,7 @@ router.get('/summary', requireAuth, async (req: AuthenticatedRequest, res) => {
       estimatedRevenueAgg,
       prevRealRevenueAgg,
       prevConfirmedCount,
-      atRiskCount,
+      needsReviewCount,
     ] = await Promise.all([
       prisma.order.count({ where: { businessId, createdAt: { gte: start } } }),
       prisma.order.count({ where: { businessId, createdAt: { gte: start }, status: { in: ['CONFIRMED', 'DELIVERED'] } } }),
@@ -52,7 +50,7 @@ router.get('/summary', requireAuth, async (req: AuthenticatedRequest, res) => {
         _sum: { totalPrice: true },
       }),
       prisma.order.count({ where: { businessId, createdAt: { gte: prevStart, lte: prevEnd }, status: { in: ['CONFIRMED', 'DELIVERED'] } } }),
-      prisma.order.count({ where: { businessId, status: 'NEW', createdAt: { lt: twoHoursAgo } } }),
+      prisma.order.count({ where: { businessId, needsReview: true } }),
     ]);
 
     const realRevenue = realRevenueAgg._sum.totalPrice ?? 0;
@@ -77,7 +75,7 @@ router.get('/summary', requireAuth, async (req: AuthenticatedRequest, res) => {
       avgOrderValue,
       confirmationRate: totalCount > 0 ? Math.round((confirmedCount / totalCount) * 100) : 0,
       cancellationRate: totalCount > 0 ? Math.round((cancelledCount / totalCount) * 100) : 0,
-      atRiskCount,
+      atRiskCount: needsReviewCount,
       revenueEvolution,
       avgEvolution,
     });

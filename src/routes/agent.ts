@@ -89,7 +89,7 @@ async function buildContext(businessId: string) {
     }),
     prisma.productCatalog.findMany({ where: { businessId } }),
     prisma.order.findMany({
-      where: { businessId, status: 'NEW', createdAt: { lt: twoHoursAgo } },
+      where: { businessId, needsReview: true },
       select: { customerName: true, product: true, createdAt: true },
     }),
   ]);
@@ -105,7 +105,7 @@ async function buildContext(businessId: string) {
     today: {
       orders: todayOrders.length,
       revenue: todayRevenue,
-      newOrders: todayOrders.filter(o => o.status === 'NEW').length,
+      needsReviewOrders: todayOrders.filter(o => o.needsReview).length,
       confirmedOrders: todayOrders.filter(o => o.status === 'CONFIRMED').length,
       deliveredOrders: todayOrders.filter(o => o.status === 'DELIVERED').length,
       cancelledOrders: todayOrders.filter(o => o.status === 'CANCELLED').length,
@@ -250,7 +250,7 @@ router.get('/alerts', requireAuth, async (req: AuthenticatedRequest, res) => {
       last30Count,
       last30RevenueAgg,
     ] = await Promise.all([
-      prisma.order.findMany({ where: { businessId, status: 'NEW', createdAt: { lt: twoHoursAgo } } }),
+      prisma.order.findMany({ where: { businessId, needsReview: true } }),
       prisma.order.findMany({ where: { businessId, createdAt: { gte: todayStart } } }),
       prisma.order.findMany({ where: { businessId, createdAt: { gte: weekStart } } }),
       prisma.order.groupBy({
