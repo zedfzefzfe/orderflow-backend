@@ -635,6 +635,16 @@ async function handleYCloudEcho(body: Record<string, unknown>): Promise<void> {
     return;
   }
 
+  // Auto-save merchant phone on first echo if not yet stored
+  if (!business.ownerNotifyPhone && merchantPhone) {
+    await prisma.business.update({
+      where: { id: business.id },
+      data: { ownerNotifyPhone: merchantPhone },
+    });
+    business.ownerNotifyPhone = merchantPhone;
+    console.log('[AUTO] Saved merchant phone from echo:', merchantPhone);
+  }
+
   let content = '';
   if (msgType === 'text') {
     const textObj = message.text as Record<string, string> | undefined;

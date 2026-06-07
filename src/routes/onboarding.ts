@@ -7,7 +7,7 @@ const router = Router();
 // POST /api/onboarding — save WhatsApp Phone Number ID + Business Account ID
 router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { phoneNumberId, businessAccountId } = req.body;
+    const { phoneNumberId, businessAccountId, notifyPhone } = req.body;
 
     if (!phoneNumberId?.trim() || !businessAccountId?.trim()) {
       res.status(400).json({ error: 'Both phoneNumberId and businessAccountId are required' });
@@ -19,6 +19,8 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       data: {
         whatsappPhoneNumberId: phoneNumberId.trim(),
         whatsappBusinessAccountId: businessAccountId.trim(),
+        // Save merchant's personal WhatsApp number for role detection
+        ...(notifyPhone?.trim() ? { ownerNotifyPhone: notifyPhone.trim() } : {}),
       },
     });
 
