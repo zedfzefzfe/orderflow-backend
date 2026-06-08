@@ -236,13 +236,13 @@ async function handleTrigger(business: Business, customerPhone: string, messageT
     console.log('[TRIGGER] Created new pending order');
   }
 
-  // Send formulaire to client — includes product details so they know what they ordered
-  const formulaire = `✅ Commande notée ! 🌸
+  // Send formulaire to client — use merchant's custom template if set
+  const DEFAULT_FORMULAIRE = `✅ Commande notée ! 🌸
 تم تسجيل طلبك !
 
-📦 ${productInfo.product}
-💰 ${productInfo.price ? productInfo.price + ' DH' : 'Prix à confirmer'}
-🚚 Livraison : ${productInfo.deliveryPrice ? productInfo.deliveryPrice + ' DH' : 'Gratuite 🎁'}
+📦 {produit}
+💰 {prix}
+🚚 Livraison : {livraison}
 
 Pour finaliser, envoyez en un message :
 لإتمام الطلب، أرسل في رسالة واحدة :
@@ -255,6 +255,13 @@ Exemple :
 Fatima Zahra
 Hay Mohammadi Bloc 5 Casablanca
 Samedi 8 juin`;
+
+  const freshBusiness = await prisma.business.findUnique({ where: { id: businessId } });
+  const formulaireTemplate = freshBusiness?.formulaireTemplate || DEFAULT_FORMULAIRE;
+  const formulaire = formulaireTemplate
+    .replace('{produit}', productInfo.product || '')
+    .replace('{prix}', productInfo.price ? productInfo.price + ' DH' : 'Prix à confirmer')
+    .replace('{livraison}', productInfo.deliveryPrice ? productInfo.deliveryPrice + ' DH' : 'Gratuite 🎁');
 
   await sendWhatsAppMessage(customerPhone, formulaire, businessId);
   console.log('[FLOW] Formulaire sent to client:', customerPhone);
@@ -610,19 +617,30 @@ async function handleYCloudPayload(body: Record<string, unknown>): Promise<void>
             data: { status: 'COMPLETED' },
           });
 
-          const confirmation = `✅ Commande confirmée ! 🌸
+          const DEFAULT_CONFIRMATION = `✅ Commande confirmée ! 🌸
 تم تأكيد طلبك !
 
-👤 ${order.customerName}
-📦 ${updated.product || 'À préciser'}
-💰 ${updated.price ? updated.price + ' DH' : 'À confirmer'}
-🚚 Livraison : ${updated.deliveryPrice ? updated.deliveryPrice + ' DH' : 'Gratuite 🎁'}
-💵 Total : ${total > 0 ? total + ' DH' : 'À confirmer'}
-📍 ${order.address}
-🗓️ ${order.deliveryDate}
+👤 {nom}
+📦 {produit}
+💰 {prix}
+🚚 Livraison : {livraison}
+💵 Total : {total}
+📍 {adresse}
+🗓️ {date}
 
 Merci pour votre confiance ! 🙏
 شكراً على ثقتكم !`;
+
+          const latestBusiness = await prisma.business.findUnique({ where: { id: business.id } });
+          const confirmTpl = latestBusiness?.confirmationTemplate || DEFAULT_CONFIRMATION;
+          const confirmation = confirmTpl
+            .replace('{nom}', order.customerName)
+            .replace('{produit}', updated.product || 'À préciser')
+            .replace('{prix}', updated.price ? updated.price + ' DH' : 'À confirmer')
+            .replace('{livraison}', updated.deliveryPrice ? updated.deliveryPrice + ' DH' : 'Gratuite 🎁')
+            .replace('{total}', total > 0 ? total + ' DH' : 'À confirmer')
+            .replace('{adresse}', order.address || '—')
+            .replace('{date}', order.deliveryDate || '—');
 
           await sendWhatsAppMessage(customerPhone, confirmation, business.id);
           console.log('[ORDER] Created and confirmed:', order.id);

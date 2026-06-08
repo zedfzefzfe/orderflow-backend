@@ -14,6 +14,8 @@ model Business {
   whatsappPhoneNumberId        String?   @map("whatsapp_phone_number_id")
   whatsappBusinessAccountId    String?   @map("whatsapp_business_account_id")
   ownerNotifyPhone             String?   @map("owner_notify_phone")
+  confirmationTemplate         String?   @map("confirmation_template")
+  formulaireTemplate           String?   @map("formulaire_template")
   plan                        String    @default("trial")
   trialEndsAt                 DateTime? @map("trial_ends_at")
   createdAt                   DateTime  @default(now()) @map("created_at")

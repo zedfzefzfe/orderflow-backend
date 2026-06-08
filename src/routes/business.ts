@@ -35,6 +35,10 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
       name: business.name,
       plan: business.plan,
       trialEndsAt: business.trialEndsAt,
+      ownerNotifyPhone: business.ownerNotifyPhone,
+      whatsappPhoneNumberId: business.whatsappPhoneNumberId,
+      confirmationTemplate: business.confirmationTemplate,
+      formulaireTemplate: business.formulaireTemplate,
       orderCount,
       orderLimit: limit,
       usagePercent,
@@ -45,6 +49,33 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('Business me error:', err);
     res.status(500).json({ error: 'Failed to fetch business info' });
+  }
+});
+
+// PATCH /api/business/me — update editable business fields
+router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { name, ownerNotifyPhone, confirmationTemplate, formulaireTemplate } = req.body;
+    const data: Record<string, unknown> = {};
+
+    if (name !== undefined) data.name = String(name).trim();
+    if (ownerNotifyPhone !== undefined) data.ownerNotifyPhone = ownerNotifyPhone ? String(ownerNotifyPhone).trim() : null;
+    if (confirmationTemplate !== undefined) data.confirmationTemplate = confirmationTemplate ? String(confirmationTemplate) : null;
+    if (formulaireTemplate !== undefined) data.formulaireTemplate = formulaireTemplate ? String(formulaireTemplate) : null;
+
+    if (Object.keys(data).length === 0) {
+      res.status(400).json({ error: 'No fields to update' }); return;
+    }
+
+    const business = await prisma.business.update({
+      where: { id: req.user!.businessId },
+      data,
+    });
+
+    res.json({ success: true, business });
+  } catch (err) {
+    console.error('Business patch error:', err);
+    res.status(500).json({ error: 'Failed to update business' });
   }
 });
 
