@@ -126,6 +126,33 @@ router.get('/export', requireAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
+// GET /api/orders/client/:phone — order history for a specific client
+router.get('/client/:phone', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const businessId = req.user!.businessId;
+    const rawPhone = req.params.phone.replace(/\s/g, '');
+    const suffix = rawPhone.slice(-9);
+
+    const orders = await prisma.order.findMany({
+      where: {
+        businessId,
+        customerPhone: { contains: suffix },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const totalCA = orders.reduce(
+      (sum, o) => sum + (o.price ?? 0) * (o.quantity ?? 1) + (o.deliveryPrice ?? 0),
+      0,
+    );
+
+    res.json({ orders, totalCA, totalOrders: orders.length });
+  } catch (err) {
+    console.error('Client history error:', err);
+    res.status(500).json({ error: 'Failed to fetch client history' });
+  }
+});
+
 // PATCH /api/orders/:id - Update any order fields
 router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
