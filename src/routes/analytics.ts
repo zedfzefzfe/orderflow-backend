@@ -28,34 +28,34 @@ router.get('/summary', requireAuth, async (req: AuthenticatedRequest, res) => {
       totalCount,
       confirmedCount,
       cancelledCount,
-      realRevenueAgg,
-      estimatedRevenueAgg,
-      prevRealRevenueAgg,
+      realOrders,
+      estimatedOrders,
+      prevRealOrders,
       prevConfirmedCount,
       needsReviewCount,
     ] = await Promise.all([
       prisma.order.count({ where: { businessId, createdAt: { gte: start } } }),
       prisma.order.count({ where: { businessId, createdAt: { gte: start }, status: { in: ['CONFIRMED', 'DELIVERED'] } } }),
       prisma.order.count({ where: { businessId, createdAt: { gte: start }, status: 'CANCELLED' } }),
-      prisma.order.aggregate({
-        where: { businessId, createdAt: { gte: start }, status: { in: ['CONFIRMED', 'DELIVERED'] }, totalPrice: { not: null } },
-        _sum: { totalPrice: true },
+      prisma.order.findMany({
+        where: { businessId, createdAt: { gte: start }, status: { in: ['CONFIRMED', 'DELIVERED'] }, price: { not: null } },
+        select: { price: true, quantity: true },
       }),
-      prisma.order.aggregate({
-        where: { businessId, createdAt: { gte: start }, totalPrice: { not: null } },
-        _sum: { totalPrice: true },
+      prisma.order.findMany({
+        where: { businessId, createdAt: { gte: start } },
+        select: { price: true, quantity: true, deliveryPrice: true },
       }),
-      prisma.order.aggregate({
-        where: { businessId, createdAt: { gte: prevStart, lte: prevEnd }, status: { in: ['CONFIRMED', 'DELIVERED'] }, totalPrice: { not: null } },
-        _sum: { totalPrice: true },
+      prisma.order.findMany({
+        where: { businessId, createdAt: { gte: prevStart, lte: prevEnd }, status: { in: ['CONFIRMED', 'DELIVERED'] }, price: { not: null } },
+        select: { price: true, quantity: true },
       }),
       prisma.order.count({ where: { businessId, createdAt: { gte: prevStart, lte: prevEnd }, status: { in: ['CONFIRMED', 'DELIVERED'] } } }),
       prisma.order.count({ where: { businessId, needsReview: true } }),
     ]);
 
-    const realRevenue = realRevenueAgg._sum.totalPrice ?? 0;
-    const estimatedRevenue = estimatedRevenueAgg._sum.totalPrice ?? 0;
-    const prevRealRevenue = prevRealRevenueAgg._sum.totalPrice ?? 0;
+    const realRevenue = realOrders.reduce((s, o) => s + (o.price ?? 0) * (o.quantity ?? 1), 0);
+    const estimatedRevenue = estimatedOrders.reduce((s, o) => s + (o.price ?? 0) * (o.quantity ?? 1) + (o.deliveryPrice ?? 0), 0);
+    const prevRealRevenue = prevRealOrders.reduce((s, o) => s + (o.price ?? 0) * (o.quantity ?? 1), 0);
     const avgOrderValue = confirmedCount > 0 ? Math.round(realRevenue / confirmedCount) : 0;
     const prevAvgOrderValue = prevConfirmedCount > 0 ? Math.round(prevRealRevenue / prevConfirmedCount) : 0;
 
