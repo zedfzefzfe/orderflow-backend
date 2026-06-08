@@ -1,9 +1,38 @@
 import { Router, Request, Response } from 'express';
 import type { Business } from '@prisma/client';
+import webpush from 'web-push';
 import { prisma } from '../lib/prisma.js';
 import { classifyClientMessage } from '../services/llmParser.js';
 import { notifyOwner } from '../services/whatsapp.js';
 import { transcribeAudio, resolveMetaMediaUrl } from '../services/transcription.js';
+
+if (process.env.VAPID_EMAIL && process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    process.env.VAPID_EMAIL,
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY,
+  );
+}
+
+async function sendPushNotification(businessId: string, order: { id: string; customerName: string; product: string }): Promise<void> {
+  try {
+    const business = await prisma.business.findUnique({ where: { id: businessId } });
+    if (!business?.pushSubscription) return;
+
+    const subscription = JSON.parse(business.pushSubscription);
+    await webpush.sendNotification(
+      subscription,
+      JSON.stringify({
+        title: '🛍️ Nouvelle commande !',
+        body: `${order.customerName || 'Client'} — ${order.product || 'Produit'}`,
+        url: '/',
+      }),
+    );
+    console.log('[PUSH] Notification sent for order:', order.id);
+  } catch (err) {
+    console.error('[PUSH] Failed to send notification:', err);
+  }
+}
 
 const router = Router();
 
@@ -646,6 +675,7 @@ Merci pour votre confiance ! 🙏
           console.log('[ORDER] Created and confirmed:', order.id);
 
           notifyOwner(business, order).catch((err) => console.error('[FLOW] notifyOwner error:', err));
+          sendPushNotification(business.id, order).catch(() => {});
           await markConversationProcessed(business.id, customerPhone);
         }
       }

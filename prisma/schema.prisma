@@ -16,6 +16,7 @@ model Business {
   ownerNotifyPhone             String?   @map("owner_notify_phone")
   confirmationTemplate         String?   @map("confirmation_template")
   formulaireTemplate           String?   @map("formulaire_template")
+  pushSubscription             String?   @map("push_subscription")
   plan                        String    @default("trial")
   trialEndsAt                 DateTime? @map("trial_ends_at")
   createdAt                   DateTime  @default(now()) @map("created_at")

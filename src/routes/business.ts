@@ -1,6 +1,15 @@
 import { Router } from 'express';
+import webpush from 'web-push';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
+
+if (process.env.VAPID_EMAIL && process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
+  webpush.setVapidDetails(
+    process.env.VAPID_EMAIL,
+    process.env.VAPID_PUBLIC_KEY,
+    process.env.VAPID_PRIVATE_KEY,
+  );
+}
 
 const router = Router();
 
@@ -39,6 +48,7 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
       whatsappPhoneNumberId: business.whatsappPhoneNumberId,
       confirmationTemplate: business.confirmationTemplate,
       formulaireTemplate: business.formulaireTemplate,
+      vapidPublicKey: process.env.VAPID_PUBLIC_KEY || null,
       orderCount,
       orderLimit: limit,
       usagePercent,
@@ -76,6 +86,22 @@ router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('Business patch error:', err);
     res.status(500).json({ error: 'Failed to update business' });
+  }
+});
+
+// POST /api/business/push-subscription — save browser push subscription
+router.post('/push-subscription', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const businessId = req.user!.businessId;
+    await prisma.business.update({
+      where: { id: businessId },
+      data: { pushSubscription: JSON.stringify(req.body) },
+    });
+    res.json({ success: true });
+    console.log('[PUSH] Subscription saved for business:', businessId);
+  } catch (err) {
+    console.error('[PUSH] Save subscription error:', err);
+    res.status(500).json({ error: 'Failed to save subscription' });
   }
 });
 
