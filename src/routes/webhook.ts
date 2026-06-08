@@ -221,8 +221,8 @@ async function handleTrigger(business: Business, customerPhone: string, messageT
 
   // Plan limit check — applies once the order is ultimately created, but
   // we block early so the merchant knows before waiting for client info.
-  const PLAN_LIMITS: Record<string, number> = { trial: 50, starter: 200, growth: -1, pro: -1 };
-  const limit = PLAN_LIMITS[business.plan] ?? 50;
+  const PLAN_LIMITS: Record<string, number> = { trial: 20, starter: 200, growth: -1, pro: -1 };
+  const limit = PLAN_LIMITS[business.plan] ?? 20;
   if (limit !== -1) {
     const count = await prisma.order.count({ where: { businessId } });
     if (count >= limit) {

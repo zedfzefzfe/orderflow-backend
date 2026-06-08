@@ -14,7 +14,7 @@ if (process.env.VAPID_EMAIL && process.env.VAPID_PUBLIC_KEY && process.env.VAPID
 const router = Router();
 
 const PLAN_LIMITS: Record<string, number> = {
-  trial: 50,
+  trial: 20,
   starter: 200,
   growth: -1,
   pro: -1,
@@ -36,7 +36,7 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
       where: { businessId: business.id },
     });
 
-    const limit = PLAN_LIMITS[business.plan] ?? 50;
+    const limit = PLAN_LIMITS[business.plan] ?? 20;
     const usagePercent = limit === -1 ? 0 : Math.round((orderCount / limit) * 100);
 
     res.json({
