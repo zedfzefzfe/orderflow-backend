@@ -19,29 +19,28 @@ router.get('/summary', requireAuth, async (req, res) => {
         const businessId = req.user.businessId;
         const days = parseInt(req.query.period) || 30;
         const { start, prevStart, prevEnd } = getPeriodRange(days);
-        const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
-        const [totalCount, confirmedCount, cancelledCount, realRevenueAgg, estimatedRevenueAgg, prevRealRevenueAgg, prevConfirmedCount, atRiskCount,] = await Promise.all([
+        const [totalCount, confirmedCount, cancelledCount, realOrders, estimatedOrders, prevRealOrders, prevConfirmedCount, needsReviewCount,] = await Promise.all([
             prisma.order.count({ where: { businessId, createdAt: { gte: start } } }),
             prisma.order.count({ where: { businessId, createdAt: { gte: start }, status: { in: ['CONFIRMED', 'DELIVERED'] } } }),
             prisma.order.count({ where: { businessId, createdAt: { gte: start }, status: 'CANCELLED' } }),
-            prisma.order.aggregate({
-                where: { businessId, createdAt: { gte: start }, status: { in: ['CONFIRMED', 'DELIVERED'] }, totalPrice: { not: null } },
-                _sum: { totalPrice: true },
+            prisma.order.findMany({
+                where: { businessId, createdAt: { gte: start }, status: { in: ['CONFIRMED', 'DELIVERED'] }, price: { not: null } },
+                select: { price: true, quantity: true },
             }),
-            prisma.order.aggregate({
-                where: { businessId, createdAt: { gte: start }, totalPrice: { not: null } },
-                _sum: { totalPrice: true },
+            prisma.order.findMany({
+                where: { businessId, createdAt: { gte: start } },
+                select: { price: true, quantity: true, deliveryPrice: true },
             }),
-            prisma.order.aggregate({
-                where: { businessId, createdAt: { gte: prevStart, lte: prevEnd }, status: { in: ['CONFIRMED', 'DELIVERED'] }, totalPrice: { not: null } },
-                _sum: { totalPrice: true },
+            prisma.order.findMany({
+                where: { businessId, createdAt: { gte: prevStart, lte: prevEnd }, status: { in: ['CONFIRMED', 'DELIVERED'] }, price: { not: null } },
+                select: { price: true, quantity: true },
             }),
             prisma.order.count({ where: { businessId, createdAt: { gte: prevStart, lte: prevEnd }, status: { in: ['CONFIRMED', 'DELIVERED'] } } }),
-            prisma.order.count({ where: { businessId, status: 'NEW', createdAt: { lt: twoHoursAgo } } }),
+            prisma.order.count({ where: { businessId, needsReview: true } }),
         ]);
-        const realRevenue = realRevenueAgg._sum.totalPrice ?? 0;
-        const estimatedRevenue = estimatedRevenueAgg._sum.totalPrice ?? 0;
-        const prevRealRevenue = prevRealRevenueAgg._sum.totalPrice ?? 0;
+        const realRevenue = realOrders.reduce((s, o) => s + (o.price ?? 0) * (o.quantity ?? 1), 0);
+        const estimatedRevenue = estimatedOrders.reduce((s, o) => s + (o.price ?? 0) * (o.quantity ?? 1) + (o.deliveryPrice ?? 0), 0);
+        const prevRealRevenue = prevRealOrders.reduce((s, o) => s + (o.price ?? 0) * (o.quantity ?? 1), 0);
         const avgOrderValue = confirmedCount > 0 ? Math.round(realRevenue / confirmedCount) : 0;
         const prevAvgOrderValue = prevConfirmedCount > 0 ? Math.round(prevRealRevenue / prevConfirmedCount) : 0;
         const revenueEvolution = prevRealRevenue > 0
@@ -59,7 +58,7 @@ router.get('/summary', requireAuth, async (req, res) => {
             avgOrderValue,
             confirmationRate: totalCount > 0 ? Math.round((confirmedCount / totalCount) * 100) : 0,
             cancellationRate: totalCount > 0 ? Math.round((cancelledCount / totalCount) * 100) : 0,
-            atRiskCount,
+            atRiskCount: needsReviewCount,
             revenueEvolution,
             avgEvolution,
         });

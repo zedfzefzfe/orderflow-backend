@@ -74,7 +74,7 @@ async function buildContext(businessId) {
         }),
         prisma.productCatalog.findMany({ where: { businessId } }),
         prisma.order.findMany({
-            where: { businessId, status: 'NEW', createdAt: { lt: twoHoursAgo } },
+            where: { businessId, needsReview: true },
             select: { customerName: true, product: true, createdAt: true },
         }),
     ]);
@@ -86,7 +86,7 @@ async function buildContext(businessId) {
         today: {
             orders: todayOrders.length,
             revenue: todayRevenue,
-            newOrders: todayOrders.filter(o => o.status === 'NEW').length,
+            needsReviewOrders: todayOrders.filter(o => o.needsReview).length,
             confirmedOrders: todayOrders.filter(o => o.status === 'CONFIRMED').length,
             deliveredOrders: todayOrders.filter(o => o.status === 'DELIVERED').length,
             cancelledOrders: todayOrders.filter(o => o.status === 'CANCELLED').length,
@@ -202,7 +202,7 @@ router.get('/alerts', requireAuth, async (req, res) => {
         const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
         const weekStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
         const [pendingOrders, todayOrders, weekOrders, topClientGroup, last30Count, last30RevenueAgg,] = await Promise.all([
-            prisma.order.findMany({ where: { businessId, status: 'NEW', createdAt: { lt: twoHoursAgo } } }),
+            prisma.order.findMany({ where: { businessId, needsReview: true } }),
             prisma.order.findMany({ where: { businessId, createdAt: { gte: todayStart } } }),
             prisma.order.findMany({ where: { businessId, createdAt: { gte: weekStart } } }),
             prisma.order.groupBy({

@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import cron from 'node-cron';
+import webpush from 'web-push';
 import webhookRoutes from './routes/webhook.js';
 import orderRoutes from './routes/orders.js';
 import statsRoutes from './routes/stats.js';
@@ -11,6 +13,8 @@ import adminRoutes from './routes/admin.js';
 import analyticsRoutes from './routes/analytics.js';
 import catalogRoutes from './routes/catalog.js';
 import agentRoutes from './routes/agent.js';
+import { sendAllWeeklyReports } from './services/weeklyReport.js';
+import { prisma } from './lib/prisma.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -57,3 +61,51 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
 app.listen(PORT, () => {
   console.log(`OrderFlow API running on port ${PORT}`);
 });
+
+// Every Monday at 8:00 AM Morocco time
+cron.schedule('0 7 * * 1', async () => {
+  console.log('[CRON] Running weekly reports...');
+  await sendAllWeeklyReports();
+}, { timezone: 'Africa/Casablanca' });
+
+// Every day at 20:00 Morocco time — delivery confirmation reminder
+cron.schedule('0 20 * * *', async () => {
+  console.log('[CRON] Running daily delivery reminder...');
+  try {
+    const businesses = await prisma.business.findMany({
+      where: { pushSubscription: { not: null } },
+    });
+
+    for (const business of businesses) {
+      const pendingOrders = await prisma.order.findMany({
+        where: { businessId: business.id, status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] } },
+        select: { totalPrice: true, deliveryPrice: true },
+      });
+      if (pendingOrders.length === 0) continue;
+
+      const caEnAttente = pendingOrders.reduce(
+        (sum, o) => sum + (o.totalPrice ?? 0) + (o.deliveryPrice ?? 0),
+        0,
+      );
+      const n = pendingOrders.length;
+
+      try {
+        await webpush.sendNotification(
+          JSON.parse(business.pushSubscription!),
+          JSON.stringify({
+            title: 'OrderFlow — Rappel de soirée',
+            body: `📦 Tu as ${n} livraison${n > 1 ? 's' : ''} en cours · ${caEnAttente.toLocaleString('fr-FR')} DH en attente. Confirme celles qui sont arrivées 💰`,
+          }),
+        );
+        console.log(`[CRON] Reminder sent to business ${business.id}`);
+      } catch (e) {
+        console.error(`[CRON] Push failed for business ${business.id}:`, e);
+      }
+    }
+  } catch (err) {
+    console.error('[CRON] Daily reminder error:', err);
+  }
+}, { timezone: 'Africa/Casablanca' });
+
+console.log('[CRON] Weekly report scheduled every Monday at 8:00 AM');
+console.log('[CRON] Daily delivery reminder scheduled at 20:00 Africa/Casablanca');

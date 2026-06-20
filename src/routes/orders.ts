@@ -166,11 +166,13 @@ router.patch('/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
 
     const data: Record<string, unknown> = {};
 
+    const VALID_STATUSES = ['CONFIRMED', 'EN_LIVRAISON', 'LIVRE', 'RETOURNE', 'ANNULE', 'DELIVERED', 'CANCELLED'];
     if (status !== undefined) {
-      if (!['CONFIRMED', 'DELIVERED', 'CANCELLED'].includes(status)) {
+      if (!VALID_STATUSES.includes(status)) {
         res.status(400).json({ error: 'Invalid status' }); return;
       }
       data.status = status;
+      if (status === 'LIVRE') data.deliveredAt = new Date();
     }
     if (customerName !== undefined) data.customerName = String(customerName).trim();
     if (customerPhone !== undefined) data.customerPhone = String(customerPhone).trim();
@@ -273,6 +275,37 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('Create order error:', err);
     res.status(500).json({ error: 'Failed to create order' });
+  }
+});
+
+// POST /api/orders/batch-status — bulk status update (e.g. "Clôturer la journée")
+router.post('/batch-status', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const businessId = req.user!.businessId;
+    const { updates } = req.body as { updates: { orderId: string; status: string }[] };
+
+    if (!Array.isArray(updates) || updates.length === 0) {
+      res.status(400).json({ error: 'updates array required' }); return;
+    }
+
+    const VALID = ['CONFIRMED', 'EN_LIVRAISON', 'LIVRE', 'RETOURNE', 'ANNULE', 'DELIVERED', 'CANCELLED'];
+    const now = new Date();
+
+    const results = await Promise.all(
+      updates
+        .filter(({ status }) => VALID.includes(status))
+        .map(({ orderId, status }) => {
+          const data: Record<string, unknown> = { status };
+          if (status === 'LIVRE') data.deliveredAt = now;
+          return prisma.order.updateMany({ where: { id: orderId, businessId }, data });
+        }),
+    );
+
+    const updated = results.reduce((sum, r) => sum + r.count, 0);
+    res.json({ updated });
+  } catch (err) {
+    console.error('Batch status error:', err);
+    res.status(500).json({ error: 'Failed to update orders' });
   }
 });
 

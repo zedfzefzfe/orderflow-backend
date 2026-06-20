@@ -17,6 +17,7 @@ model Business {
   confirmationTemplate         String?   @map("confirmation_template")
   formulaireTemplate           String?   @map("formulaire_template")
   pushSubscription             String?   @map("push_subscription")
+  weeklyReportEnabled          Boolean   @default(true) @map("weekly_report_enabled")
   plan                        String    @default("trial")
   trialEndsAt                 DateTime? @map("trial_ends_at")
   createdAt                   DateTime  @default(now()) @map("created_at")
@@ -45,6 +46,10 @@ model User {
 
 enum OrderStatus {
   CONFIRMED
+  EN_LIVRAISON
+  LIVRE
+  RETOURNE
+  ANNULE
   DELIVERED
   CANCELLED
 }
@@ -65,6 +70,7 @@ model Order {
   needsReview   Boolean     @default(false) @map("needs_review")
   rawMessage    String      @map("raw_message")
   source        String      @default("whatsapp")
+  deliveredAt   DateTime?   @map("delivered_at")
   createdAt     DateTime    @default(now()) @map("created_at")
 
   business Business @relation(fields: [businessId], references: [id])

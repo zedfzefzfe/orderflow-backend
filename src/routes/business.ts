@@ -2,6 +2,7 @@ import { Router } from 'express';
 import webpush from 'web-push';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
+import { sendAllWeeklyReports } from '../services/weeklyReport.js';
 
 if (process.env.VAPID_EMAIL && process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
   webpush.setVapidDetails(
@@ -46,8 +47,10 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
       trialEndsAt: business.trialEndsAt,
       ownerNotifyPhone: business.ownerNotifyPhone,
       whatsappPhoneNumberId: business.whatsappPhoneNumberId,
+      email: business.email,
       confirmationTemplate: business.confirmationTemplate,
       formulaireTemplate: business.formulaireTemplate,
+      weeklyReportEnabled: business.weeklyReportEnabled,
       vapidPublicKey: process.env.VAPID_PUBLIC_KEY || null,
       orderCount,
       orderLimit: limit,
@@ -65,13 +68,15 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
 // PATCH /api/business/me — update editable business fields
 router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { name, ownerNotifyPhone, confirmationTemplate, formulaireTemplate } = req.body;
+    const { name, ownerNotifyPhone, confirmationTemplate, formulaireTemplate, email, weeklyReportEnabled } = req.body;
     const data: Record<string, unknown> = {};
 
     if (name !== undefined) data.name = String(name).trim();
     if (ownerNotifyPhone !== undefined) data.ownerNotifyPhone = ownerNotifyPhone ? String(ownerNotifyPhone).trim() : null;
     if (confirmationTemplate !== undefined) data.confirmationTemplate = confirmationTemplate ? String(confirmationTemplate) : null;
     if (formulaireTemplate !== undefined) data.formulaireTemplate = formulaireTemplate ? String(formulaireTemplate) : null;
+    if (email !== undefined) data.email = email ? String(email).trim().toLowerCase() : null;
+    if (weeklyReportEnabled !== undefined) data.weeklyReportEnabled = Boolean(weeklyReportEnabled);
 
     if (Object.keys(data).length === 0) {
       res.status(400).json({ error: 'No fields to update' }); return;
@@ -86,6 +91,24 @@ router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   } catch (err) {
     console.error('Business patch error:', err);
     res.status(500).json({ error: 'Failed to update business' });
+  }
+});
+
+// POST /api/business/test-weekly-report — send report now (dev/test)
+router.post('/test-weekly-report', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const business = await prisma.business.findUnique({
+      where: { id: req.user!.businessId },
+    });
+    if (!business?.email) {
+      res.status(400).json({ error: 'No email configured — add one in Settings first' });
+      return;
+    }
+    await sendAllWeeklyReports();
+    res.json({ success: true, message: `Report sent to ${business.email}` });
+  } catch (err) {
+    console.error('[TEST-REPORT] Error:', err);
+    res.status(500).json({ error: 'Failed to send test report' });
   }
 });
 

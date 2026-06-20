@@ -62,4 +62,42 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
+// GET /api/stats/cashflow — CA encaissé vs en attente (scopé au business)
+router.get('/cashflow', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const businessId = req.user!.businessId;
+
+    const [livreesRows, retourneesCount, enAttenteRows] = await Promise.all([
+      prisma.order.findMany({
+        where: { businessId, status: { in: ['LIVRE', 'DELIVERED'] as any[] } },
+        select: { totalPrice: true, deliveryPrice: true },
+      }),
+      prisma.order.count({
+        where: { businessId, status: { in: ['RETOURNE', 'CANCELLED'] as any[] } },
+      }),
+      prisma.order.findMany({
+        where: { businessId, status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] } },
+        select: { totalPrice: true, deliveryPrice: true },
+      }),
+    ]);
+
+    const sumCOD = (rows: { totalPrice: number | null; deliveryPrice: number | null }[]) =>
+      rows.reduce((sum, o) => sum + (o.totalPrice ?? 0) + (o.deliveryPrice ?? 0), 0);
+
+    const caEncaisse = sumCOD(livreesRows);
+    const caEnAttente = sumCOD(enAttenteRows);
+    const nbLivrees = livreesRows.length;
+    const nbEnAttente = enAttenteRows.length;
+    const tauxLivraison =
+      nbLivrees + retourneesCount > 0
+        ? Math.round((nbLivrees / (nbLivrees + retourneesCount)) * 100)
+        : 100;
+
+    res.json({ caEncaisse, caEnAttente, nbLivrees, nbEnAttente, tauxLivraison });
+  } catch (err) {
+    console.error('Cashflow stats error:', err);
+    res.status(500).json({ error: 'Failed to fetch cashflow stats' });
+  }
+});
+
 export default router;
