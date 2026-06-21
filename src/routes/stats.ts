@@ -79,14 +79,14 @@ router.get('/cashflow', requireAuth, async (req: AuthenticatedRequest, res) => {
         },
         select: { totalPrice: true, deliveryPrice: true },
       }),
-      // enAttente: tous les EN_LIVRAISON (pas de filtre mois)
+      // enAttente: CONFIRMED + EN_LIVRAISON (tout l'argent pas encore encaissé)
       prisma.order.findMany({
-        where: { businessId, status: 'EN_LIVRAISON' as any },
+        where: { businessId, status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] } },
         select: { totalPrice: true, deliveryPrice: true },
       }),
-      // aConfirmer: EN_LIVRAISON non résolus
+      // aConfirmer: CONFIRMED + EN_LIVRAISON non résolus
       prisma.order.count({
-        where: { businessId, status: 'EN_LIVRAISON' as any, confirmationResolved: false },
+        where: { businessId, status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] }, confirmationResolved: false },
       }),
       // pour tauxLivraison
       prisma.order.count({
