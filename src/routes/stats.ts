@@ -62,35 +62,58 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
   }
 });
 
-// GET /api/stats/cashflow — CA encaissé (mois en cours), en attente, à confirmer
+// GET /api/stats/cashflow — CA encaissé, en attente, à confirmer (respecte dateFrom/dateTo)
 router.get('/cashflow', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const businessId = req.user!.businessId;
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
 
+    const { dateFrom, dateTo } = req.query as { dateFrom?: string; dateTo?: string };
+
+    // Build createdAt filter from query params when provided
+    const hasDateFilter = !!(dateFrom || dateTo);
+    const createdAtFilter = hasDateFilter ? {
+      ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+      // dateTo is a date string (YYYY-MM-DD) — include the full day
+      ...(dateTo ? { lt: new Date(new Date(dateTo).getTime() + 86400000) } : {}),
+    } : null;
+
     const [livreesRows, enAttenteRows, aConfirmerCount, retourneesCount] = await Promise.all([
-      // caEncaisse: LIVRE du mois en cours
+      // caEncaisse: LIVRE — filtré par période active ou mois en cours par défaut
       prisma.order.findMany({
         where: {
           businessId,
           status: { in: ['LIVRE', 'DELIVERED'] as any[] },
-          createdAt: { gte: monthStart },
+          createdAt: createdAtFilter ?? { gte: monthStart },
         },
         select: { totalPrice: true, deliveryPrice: true },
       }),
-      // enAttente: CONFIRMED + EN_LIVRAISON (tout l'argent pas encore encaissé)
+      // enAttente: CONFIRMED + EN_LIVRAISON — filtré par période si active
       prisma.order.findMany({
-        where: { businessId, status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] } },
+        where: {
+          businessId,
+          status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] },
+          ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
+        },
         select: { totalPrice: true, deliveryPrice: true },
       }),
-      // aConfirmer: CONFIRMED + EN_LIVRAISON non résolus
+      // aConfirmer: CONFIRMED + EN_LIVRAISON non résolus — filtré par période si active
       prisma.order.count({
-        where: { businessId, status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] }, confirmationResolved: false },
+        where: {
+          businessId,
+          status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] },
+          confirmationResolved: false,
+          ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
+        },
       }),
-      // pour tauxLivraison
+      // pour tauxLivraison — filtré par période si active
       prisma.order.count({
-        where: { businessId, status: { in: ['RETOURNE', 'CANCELLED'] as any[] } },
+        where: {
+          businessId,
+          status: { in: ['RETOURNE', 'CANCELLED'] as any[] },
+          ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
+        },
       }),
     ]);
 
