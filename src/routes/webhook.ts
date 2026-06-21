@@ -706,7 +706,11 @@ Merci pour votre confiance ! 🙏
               if (fields.productCategory) data.productCategory = fields.productCategory as ProductCategory;
               if (fields.wilaya)          data.wilaya          = fields.wilaya as MoroccanWilaya;
               if (fields.city)            data.city            = fields.city;
-              if (fields.deliveryCompany) data.deliveryCompany = fields.deliveryCompany as DeliveryCompany;
+              // Fallback: si l'IA n'a pas détecté de coursier, utilise le coursier par défaut du marchand
+              const deliveryCompany = (fields.deliveryCompany as DeliveryCompany | null)
+                ?? business.defaultDeliveryCompany
+                ?? null;
+              if (deliveryCompany) data.deliveryCompany = deliveryCompany;
               if (Object.keys(data).length > 0) {
                 await prisma.order.update({ where: { id: order.id }, data });
                 console.log('[structured] Fields saved for order:', order.id, fields);

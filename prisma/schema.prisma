@@ -86,9 +86,10 @@ model Business {
   plan                        String          @default("trial")
   trialEndsAt                 DateTime?       @map("trial_ends_at")
   createdAt                   DateTime        @default(now()) @map("created_at")
-  sector                      BusinessSector? @map("sector")
-  wilaya                      MoroccanWilaya? @map("wilaya")
-  city                        String?         @map("city")
+  sector                      BusinessSector?  @map("sector")
+  wilaya                      MoroccanWilaya?  @map("wilaya")
+  city                        String?          @map("city")
+  defaultDeliveryCompany      DeliveryCompany? @map("default_delivery_company")
 
   users                User[]
   orders               Order[]

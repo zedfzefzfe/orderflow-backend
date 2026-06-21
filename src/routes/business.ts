@@ -51,6 +51,8 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
       confirmationTemplate: business.confirmationTemplate,
       formulaireTemplate: business.formulaireTemplate,
       weeklyReportEnabled: business.weeklyReportEnabled,
+      sector: business.sector,
+      defaultDeliveryCompany: business.defaultDeliveryCompany,
       vapidPublicKey: process.env.VAPID_PUBLIC_KEY || null,
       orderCount,
       orderLimit: limit,
@@ -68,7 +70,7 @@ router.get('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
 // PATCH /api/business/me — update editable business fields
 router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { name, ownerNotifyPhone, confirmationTemplate, formulaireTemplate, email, weeklyReportEnabled } = req.body;
+    const { name, ownerNotifyPhone, confirmationTemplate, formulaireTemplate, email, weeklyReportEnabled, sector, defaultDeliveryCompany } = req.body;
     const data: Record<string, unknown> = {};
 
     if (name !== undefined) data.name = String(name).trim();
@@ -77,6 +79,8 @@ router.patch('/me', requireAuth, async (req: AuthenticatedRequest, res) => {
     if (formulaireTemplate !== undefined) data.formulaireTemplate = formulaireTemplate ? String(formulaireTemplate) : null;
     if (email !== undefined) data.email = email ? String(email).trim().toLowerCase() : null;
     if (weeklyReportEnabled !== undefined) data.weeklyReportEnabled = Boolean(weeklyReportEnabled);
+    if (sector !== undefined) data.sector = sector || null;
+    if (defaultDeliveryCompany !== undefined) data.defaultDeliveryCompany = defaultDeliveryCompany || null;
 
     if (Object.keys(data).length === 0) {
       res.status(400).json({ error: 'No fields to update' }); return;
