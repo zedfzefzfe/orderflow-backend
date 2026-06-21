@@ -47,7 +47,7 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
         where: baseWhere,
         _count: { status: true },
       }),
-      prisma.order.count({ where: { businessId, needsReview: true } }),
+      prisma.order.count({ where: { ...baseWhere, needsReview: true } }),
     ]);
 
     const statusBreakdown = statusCounts.reduce<Record<string, number>>((acc, curr) => {
