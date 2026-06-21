@@ -6,7 +6,7 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { estimateDeliveryAt } from '../utils/estimateDelivery.js';
 import { ReturnReason } from '@prisma/client';
-import { recomputeCustomer, batchGetGlobalWarnings } from '../services/customerScoring.js';
+import { recomputeCustomer, batchGetGlobalWarnings, batchGetLocalWarnings } from '../services/customerScoring.js';
 import { normalizePhone } from '../utils/normalizePhone.js';
 
 let _groq: Groq | null = null;
@@ -59,16 +59,28 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       prisma.order.count({ where }),
     ]);
 
-    // Batch cross-merchant warning — une seule requête pour tous les retours de la page
+    // Batch warnings: local (tous les phones) + cross-merchant (retours uniquement)
     const RETURNED = new Set(['RETOURNE', 'ANNULE', 'CANCELLED']);
-    const returnedPhones = [
-      ...new Set(orders.filter((o) => RETURNED.has(o.status)).map((o) => o.customerPhone)),
-    ];
-    const warnMap = await batchGetGlobalWarnings(returnedPhones);
+    const allPhones = [...new Set(orders.map((o) => o.customerPhone))];
+    const returnedPhones = allPhones.filter((p) =>
+      orders.some((o) => o.customerPhone === p && RETURNED.has(o.status)),
+    );
+
+    const [localWarnMap, globalWarnMap] = await Promise.all([
+      batchGetLocalWarnings(allPhones, req.user!.businessId),
+      batchGetGlobalWarnings(returnedPhones),
+    ]);
 
     const enrichedOrders = orders.map((o) => {
-      const warning = warnMap.get(normalizePhone(o.customerPhone));
-      return warning ? { ...o, clientWarning: warning } : o;
+      const norm = normalizePhone(o.customerPhone);
+      const localWarning = localWarnMap.get(norm) ?? null;
+      const clientWarning = globalWarnMap.get(norm) ?? null;
+      if (!localWarning && !clientWarning) return o;
+      return {
+        ...o,
+        ...(localWarning ? { localWarning } : {}),
+        ...(clientWarning ? { clientWarning } : {}),
+      };
     });
 
     res.json({ orders: enrichedOrders, total, page: pageNum, limit: limitNum });

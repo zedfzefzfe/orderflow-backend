@@ -7,20 +7,88 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+enum BusinessSector {
+  BEAUTE_COSMETIQUES
+  MODE_VETEMENTS
+  DECORATION_MAISON
+  ELECTRONIQUE_HIGH_TECH
+  ALIMENTATION_EPICERIE
+  SPORT_FITNESS
+  BEBE_ENFANT
+  BIJOUX_ACCESSOIRES
+  AUTRE
+}
+
+enum ProductCategory {
+  BOUGIES_BOUQUETS
+  PARFUMS
+  VETEMENTS_MODE
+  COSMETIQUES_BEAUTE
+  BIJOUX_ACCESSOIRES
+  DECORATION_MAISON
+  ELECTRONIQUE
+  ALIMENTATION
+  SPORT_FITNESS
+  BEBE_ENFANT
+  AUTRE
+}
+
+enum MoroccanWilaya {
+  CASABLANCA
+  RABAT
+  MARRAKECH
+  FES
+  TANGER
+  AGADIR
+  MEKNES
+  OUJDA
+  KENITRA
+  TETOUAN
+  SALE
+  TEMARA
+  MOHAMMEDIA
+  EL_JADIDA
+  BENI_MELLAL
+  NADOR
+  SETTAT
+  KHOURIBGA
+  SAFI
+  LAAYOUNE
+  AUTRE
+}
+
+enum DeliveryCompany {
+  AMANA
+  MAYSTRO
+  OZONEXPRESS
+  CATHEDIS
+  SENDIT
+  TAWSSIL
+  AMEEX
+  AUTRE
+}
+
+// ── Models ────────────────────────────────────────────────────────────────────
+
 model Business {
-  id                          String    @id @default(uuid())
+  id                          String          @id @default(uuid())
   name                        String
   email                       String?
-  whatsappPhoneNumberId        String?   @map("whatsapp_phone_number_id")
-  whatsappBusinessAccountId    String?   @map("whatsapp_business_account_id")
-  ownerNotifyPhone             String?   @map("owner_notify_phone")
-  confirmationTemplate         String?   @map("confirmation_template")
-  formulaireTemplate           String?   @map("formulaire_template")
-  pushSubscription             String?   @map("push_subscription")
-  weeklyReportEnabled          Boolean   @default(true) @map("weekly_report_enabled")
-  plan                        String    @default("trial")
-  trialEndsAt                 DateTime? @map("trial_ends_at")
-  createdAt                   DateTime  @default(now()) @map("created_at")
+  whatsappPhoneNumberId        String?         @map("whatsapp_phone_number_id")
+  whatsappBusinessAccountId    String?         @map("whatsapp_business_account_id")
+  ownerNotifyPhone             String?         @map("owner_notify_phone")
+  confirmationTemplate         String?         @map("confirmation_template")
+  formulaireTemplate           String?         @map("formulaire_template")
+  pushSubscription             String?         @map("push_subscription")
+  weeklyReportEnabled          Boolean         @default(true) @map("weekly_report_enabled")
+  plan                        String          @default("trial")
+  trialEndsAt                 DateTime?       @map("trial_ends_at")
+  createdAt                   DateTime        @default(now()) @map("created_at")
+  sector                      BusinessSector? @map("sector")
+  wilaya                      MoroccanWilaya? @map("wilaya")
+  city                        String?         @map("city")
 
   users                User[]
   orders               Order[]
@@ -84,17 +152,22 @@ model Order {
   needsReview   Boolean     @default(false) @map("needs_review")
   rawMessage    String      @map("raw_message")
   source        String      @default("whatsapp")
-  deliveredAt              DateTime?     @map("delivered_at")
-  createdAt                DateTime      @default(now()) @map("created_at")
+  deliveredAt              DateTime?        @map("delivered_at")
+  createdAt                DateTime         @default(now()) @map("created_at")
 
-  estimatedDeliveryAt      DateTime?     @map("estimated_delivery_at")
-  confirmationResolved     Boolean       @default(false) @map("confirmation_resolved")
-  confirmationResolvedAt   DateTime?     @map("confirmation_resolved_at")
-  confirmationSource       String?       @map("confirmation_source")
-  returnReason             ReturnReason? @map("return_reason")
-  deliveryAttemptedAt      DateTime?     @map("delivery_attempted_at")
-  merchantNotifiedAt       DateTime?     @map("merchant_notified_at")
-  escalationTriggeredAt    DateTime?     @map("escalation_triggered_at")
+  estimatedDeliveryAt      DateTime?        @map("estimated_delivery_at")
+  confirmationResolved     Boolean          @default(false) @map("confirmation_resolved")
+  confirmationResolvedAt   DateTime?        @map("confirmation_resolved_at")
+  confirmationSource       String?          @map("confirmation_source")
+  returnReason             ReturnReason?    @map("return_reason")
+  deliveryAttemptedAt      DateTime?        @map("delivery_attempted_at")
+  merchantNotifiedAt       DateTime?        @map("merchant_notified_at")
+  escalationTriggeredAt    DateTime?        @map("escalation_triggered_at")
+
+  productCategory          ProductCategory? @map("product_category")
+  wilaya                   MoroccanWilaya?  @map("wilaya")
+  city                     String?          @map("city")
+  deliveryCompany          DeliveryCompany? @map("delivery_company")
 
   business Business @relation(fields: [businessId], references: [id])
 
@@ -143,21 +216,25 @@ model ConversationMessage {
 }
 
 model Customer {
-  id                 String    @id @default(uuid())
+  id                 String          @id @default(uuid())
   phone              String
-  businessId         String    @map("business_id")
+  businessId         String          @map("business_id")
   names              String[]
-  totalOrders        Int       @default(0) @map("total_orders")
-  delivered          Int       @default(0)
-  clientFaultReturns Int       @default(0) @map("client_fault_returns")
-  reporteClient      Int       @default(0) @map("reporte_client")
-  legitReturns       Int       @default(0) @map("legit_returns")
-  faultPoints        Float     @default(0) @map("fault_points")
-  riskScore          Int       @default(0) @map("risk_score")
-  riskLevel          String    @default("FIABLE") @map("risk_level")
-  lastOrderAt        DateTime? @map("last_order_at")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  updatedAt          DateTime  @updatedAt @map("updated_at")
+  totalOrders        Int             @default(0) @map("total_orders")
+  delivered          Int             @default(0)
+  clientFaultReturns Int             @default(0) @map("client_fault_returns")
+  reporteClient      Int             @default(0) @map("reporte_client")
+  legitReturns       Int             @default(0) @map("legit_returns")
+  faultPoints        Float           @default(0) @map("fault_points")
+  riskScore          Int             @default(0) @map("risk_score")
+  riskLevel          String          @default("FIABLE") @map("risk_level")
+  lastOrderAt        DateTime?       @map("last_order_at")
+  firstOrderAt       DateTime?       @map("first_order_at")
+  avgOrderValue      Float?          @map("avg_order_value")
+  wilaya             MoroccanWilaya? @map("wilaya")
+  city               String?         @map("city")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
 
   business Business @relation(fields: [businessId], references: [id])
 

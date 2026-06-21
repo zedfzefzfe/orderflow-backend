@@ -180,6 +180,115 @@ export async function parseOrderFromMessage(messageText: string): Promise<Parsed
 // Legacy alias for webhook compatibility
 export const parseOrderMessage = parseOrderFromMessage;
 
+// ── Structured field extractor ─────────────────────────────────────────────────
+
+const VALID_CATEGORIES = new Set([
+  'BOUGIES_BOUQUETS', 'PARFUMS', 'VETEMENTS_MODE', 'COSMETIQUES_BEAUTE',
+  'BIJOUX_ACCESSOIRES', 'DECORATION_MAISON', 'ELECTRONIQUE', 'ALIMENTATION',
+  'SPORT_FITNESS', 'BEBE_ENFANT', 'AUTRE',
+]);
+const VALID_WILAYAS = new Set([
+  'CASABLANCA', 'RABAT', 'MARRAKECH', 'FES', 'TANGER', 'AGADIR', 'MEKNES',
+  'OUJDA', 'KENITRA', 'TETOUAN', 'SALE', 'TEMARA', 'MOHAMMEDIA', 'EL_JADIDA',
+  'BENI_MELLAL', 'NADOR', 'SETTAT', 'KHOURIBGA', 'SAFI', 'LAAYOUNE', 'AUTRE',
+]);
+const VALID_DELIVERY_COMPANIES = new Set([
+  'AMANA', 'MAYSTRO', 'OZONEXPRESS', 'CATHEDIS', 'SENDIT', 'TAWSSIL', 'AMEEX', 'AUTRE',
+]);
+
+const WILAYA_ALIASES: Record<string, string> = {
+  'casablanca': 'CASABLANCA', 'casa': 'CASABLANCA', 'dar bida': 'CASABLANCA',
+  'dar el bida': 'CASABLANCA', 'الدار البيضاء': 'CASABLANCA',
+  'rabat': 'RABAT', 'الرباط': 'RABAT',
+  'marrakech': 'MARRAKECH', 'marrakesh': 'MARRAKECH', 'mrakch': 'MARRAKECH', 'مراكش': 'MARRAKECH',
+  'fes': 'FES', 'fez': 'FES', 'fès': 'FES', 'fas': 'FES', 'فاس': 'FES',
+  'tanger': 'TANGER', 'tangier': 'TANGER', 'tanja': 'TANGER', 'طنجة': 'TANGER',
+  'agadir': 'AGADIR', 'أكادير': 'AGADIR',
+  'meknes': 'MEKNES', 'meknès': 'MEKNES', 'meknas': 'MEKNES', 'مكناس': 'MEKNES',
+  'oujda': 'OUJDA', 'وجدة': 'OUJDA',
+  'kenitra': 'KENITRA', 'kénitra': 'KENITRA', 'qnitra': 'KENITRA', 'القنيطرة': 'KENITRA',
+  'tetouan': 'TETOUAN', 'tétouan': 'TETOUAN', 'tetuan': 'TETOUAN', 'تطوان': 'TETOUAN',
+  'sale': 'SALE', 'salé': 'SALE', 'sala': 'SALE', 'سلا': 'SALE',
+  'temara': 'TEMARA', 'témara': 'TEMARA', 'تمارة': 'TEMARA',
+  'mohammedia': 'MOHAMMEDIA', 'mohammédia': 'MOHAMMEDIA', 'المحمدية': 'MOHAMMEDIA',
+  'el jadida': 'EL_JADIDA', 'eljadida': 'EL_JADIDA', 'el-jadida': 'EL_JADIDA', 'الجديدة': 'EL_JADIDA',
+  'beni mellal': 'BENI_MELLAL', 'benimellal': 'BENI_MELLAL', 'بني ملال': 'BENI_MELLAL',
+  'nador': 'NADOR', 'الناظور': 'NADOR',
+  'settat': 'SETTAT', 'سطات': 'SETTAT',
+  'khouribga': 'KHOURIBGA', 'خريبكة': 'KHOURIBGA',
+  'safi': 'SAFI', 'asfi': 'SAFI', 'آسفي': 'SAFI',
+  'laayoune': 'LAAYOUNE', 'laâyoune': 'LAAYOUNE', 'laayoun': 'LAAYOUNE', 'العيون': 'LAAYOUNE',
+};
+
+function normalizeEnumVal(val: unknown, validSet: Set<string>): string | null {
+  if (!val || typeof val !== 'string') return null;
+  const upper = val.trim().toUpperCase().replace(/[\s-]/g, '_');
+  if (upper === 'NULL') return null;
+  return validSet.has(upper) ? upper : null;
+}
+
+function normalizeWilayaVal(val: unknown): string | null {
+  if (!val || typeof val !== 'string' || val.toLowerCase() === 'null') return null;
+  const upper = val.trim().toUpperCase().replace(/[\s-]/g, '_');
+  if (VALID_WILAYAS.has(upper)) return upper;
+  const lower = val.trim().toLowerCase();
+  return WILAYA_ALIASES[lower] ?? null;
+}
+
+export interface StructuredFields {
+  productCategory: string | null;
+  wilaya: string | null;
+  city: string | null;
+  deliveryCompany: string | null;
+}
+
+const STRUCTURED_SYSTEM = `Tu extrais des métadonnées structurées depuis des données de commandes marocaines.
+
+Extrait ces 4 champs:
+- productCategory: parmi [BOUGIES_BOUQUETS, PARFUMS, VETEMENTS_MODE, COSMETIQUES_BEAUTE, BIJOUX_ACCESSOIRES, DECORATION_MAISON, ELECTRONIQUE, ALIMENTATION, SPORT_FITNESS, BEBE_ENFANT, AUTRE] — utilise AUTRE si ambigu
+- wilaya: wilaya marocaine parmi [CASABLANCA, RABAT, MARRAKECH, FES, TANGER, AGADIR, MEKNES, OUJDA, KENITRA, TETOUAN, SALE, TEMARA, MOHAMMEDIA, EL_JADIDA, BENI_MELLAL, NADOR, SETTAT, KHOURIBGA, SAFI, LAAYOUNE, AUTRE] — normalise "casa"→CASABLANCA, "Rabat"→RABAT, "mrakch"→MARRAKECH, etc. Si pas de wilaya mentionnée → null
+- city: quartier ou ville précis en texte libre (ex: "Hay Mohammadi", "Guéliz", "Agdal"), null si non mentionné
+- deliveryCompany: société parmi [AMANA, MAYSTRO, OZONEXPRESS, CATHEDIS, SENDIT, TAWSSIL, AMEEX, AUTRE], null si non mentionnée
+
+RÈGLES:
+- wilaya non identifiable → null (jamais AUTRE par défaut)
+- deliveryCompany non mentionnée → null (jamais AUTRE par défaut)
+- productCategory ambigu → AUTRE
+
+FORMAT: JSON brut uniquement, sans markdown.
+{"productCategory":"...","wilaya":"...","city":"...","deliveryCompany":"..."}`;
+
+export async function extractStructuredFields(
+  product: string,
+  address: string | null,
+  rawMessage: string,
+): Promise<StructuredFields> {
+  const fallback: StructuredFields = { productCategory: null, wilaya: null, city: null, deliveryCompany: null };
+  try {
+    const input = `Produit: ${product}\nAdresse: ${address ?? '(non renseignée)'}\nMessage original: ${rawMessage.slice(0, 500)}`;
+    const response = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 128,
+      system: STRUCTURED_SYSTEM,
+      messages: [{ role: 'user', content: input }],
+    });
+    const content = response.content[0];
+    if (content.type !== 'text') return fallback;
+    const match = content.text.replace(/```(?:json)?\n?|\n?```/g, '').trim().match(/\{[\s\S]*\}/);
+    if (!match) return fallback;
+    const parsed = JSON.parse(match[0]);
+    return {
+      productCategory: normalizeEnumVal(parsed.productCategory, VALID_CATEGORIES),
+      wilaya: normalizeWilayaVal(parsed.wilaya),
+      city: toStr(parsed.city),
+      deliveryCompany: normalizeEnumVal(parsed.deliveryCompany, VALID_DELIVERY_COMPANIES),
+    };
+  } catch (err) {
+    console.error('[llmParser] extractStructuredFields error:', err);
+    return fallback;
+  }
+}
+
 // ── Client message classifier ─────────────────────────────────────────────────
 // Extracts ALL order fields present in a single client message so one message
 // like "Fatima, Casa, samedi" fills name + address + date in one shot.

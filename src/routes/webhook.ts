@@ -4,6 +4,9 @@ import webpush from 'web-push';
 import { prisma } from '../lib/prisma.js';
 import { classifyClientMessage } from '../services/llmParser.js';
 import { notifyOwner } from '../services/whatsapp.js';
+import { getGlobalClientRisk, getLocalClientWarning } from '../services/customerScoring.js';
+import { extractStructuredFields } from '../services/llmParser.js';
+import type { ProductCategory, MoroccanWilaya, DeliveryCompany } from '@prisma/client';
 import { transcribeAudio, resolveMetaMediaUrl } from '../services/transcription.js';
 
 if (process.env.VAPID_EMAIL && process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
@@ -676,6 +679,43 @@ Merci pour votre confiance ! 🙏
 
           notifyOwner(business, order).catch((err) => console.error('[FLOW] notifyOwner error:', err));
           sendPushNotification(business.id, order).catch(() => {});
+
+          // Alerte risque client — fire-and-forget, ne bloque jamais la réponse HTTP
+          ;(async () => {
+            try {
+              const [local, global] = await Promise.all([
+                getLocalClientWarning(clientPhone, business.id),
+                getGlobalClientRisk(clientPhone),
+              ]);
+              let alert: string | null = null;
+              if (global.warn) {
+                alert = `🔴 Attention — Nouvelle commande de ${order.customerName} (${clientPhone}).\nCe client a un historique de refus chez plusieurs marchands OrderFlow (${global.globalClientFaultReturns} refus sur ${global.globalScoredOrders} commandes).\nVérifie avant de confirmer.`;
+              } else if (local) {
+                alert = `⚠️ Nouvelle commande de ${order.customerName} (${clientPhone}).\nCe client a déjà annulé/refusé dans ta boutique (${local.clientFaultReturns} refus).\nReste vigilant.`;
+              }
+              if (alert) await sendWhatsAppMessageToMerchant(alert, business.id);
+            } catch (err) {
+              console.error('[risk] Warning check error:', err);
+            }
+          })();
+          // Extraction structurée fire-and-forget (productCategory, wilaya, city, deliveryCompany)
+          ;(async () => {
+            try {
+              const fields = await extractStructuredFields(order.product, order.address, order.rawMessage);
+              const data: Record<string, unknown> = {};
+              if (fields.productCategory) data.productCategory = fields.productCategory as ProductCategory;
+              if (fields.wilaya)          data.wilaya          = fields.wilaya as MoroccanWilaya;
+              if (fields.city)            data.city            = fields.city;
+              if (fields.deliveryCompany) data.deliveryCompany = fields.deliveryCompany as DeliveryCompany;
+              if (Object.keys(data).length > 0) {
+                await prisma.order.update({ where: { id: order.id }, data });
+                console.log('[structured] Fields saved for order:', order.id, fields);
+              }
+            } catch (err) {
+              console.error('[structured] Extraction error for order:', order.id, err);
+            }
+          })();
+
           await markConversationProcessed(business.id, customerPhone);
         }
       }

@@ -1,5 +1,19 @@
 import { prisma } from '../lib/prisma.js';
 import { normalizePhone } from '../utils/normalizePhone.js';
+import type { MoroccanWilaya } from '@prisma/client';
+
+function mostFrequent<T>(items: (T | null | undefined)[]): T | null {
+  const counts = new Map<T, number>();
+  for (const item of items) {
+    if (item != null) counts.set(item, (counts.get(item) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  let best: T | null = null, bestCount = 0;
+  for (const [val, count] of counts) {
+    if (count > bestCount) { bestCount = count; best = val; }
+  }
+  return best;
+}
 
 export interface GlobalRiskResult {
   warn: boolean;
@@ -32,6 +46,9 @@ export async function recomputeCustomer(rawPhone: string, businessId: string): P
       status: true,
       returnReason: true,
       createdAt: true,
+      totalPrice: true,
+      wilaya: true,
+      city: true,
     },
   });
 
@@ -45,6 +62,19 @@ export async function recomputeCustomer(rawPhone: string, businessId: string): P
     (max, o) => (!max || o.createdAt > max ? o.createdAt : max),
     null,
   );
+  const firstOrderAt = allOrders.reduce<Date | null>(
+    (min, o) => (!min || o.createdAt < min ? o.createdAt : min),
+    null,
+  );
+  const deliveredWithPrice = allOrders.filter(
+    (o) => (o.status === 'LIVRE' || o.status === 'DELIVERED') && o.totalPrice !== null,
+  );
+  const avgOrderValue =
+    deliveredWithPrice.length > 0
+      ? deliveredWithPrice.reduce((sum, o) => sum + o.totalPrice!, 0) / deliveredWithPrice.length
+      : null;
+  const wilayaMode = mostFrequent(allOrders.map((o) => o.wilaya)) as MoroccanWilaya | null;
+  const cityMode = mostFrequent(allOrders.map((o) => o.city));
 
   let delivered = 0;
   let clientFaultReturns = 0;
@@ -102,6 +132,10 @@ export async function recomputeCustomer(rawPhone: string, businessId: string): P
       riskScore,
       riskLevel,
       lastOrderAt,
+      firstOrderAt,
+      avgOrderValue,
+      wilaya: wilayaMode,
+      city: cityMode,
     },
     update: {
       names,
@@ -114,6 +148,10 @@ export async function recomputeCustomer(rawPhone: string, businessId: string): P
       riskScore,
       riskLevel,
       lastOrderAt,
+      firstOrderAt,
+      avgOrderValue,
+      wilaya: wilayaMode,
+      city: cityMode,
     },
   });
 }
@@ -147,7 +185,7 @@ function aggregateGlobalRisk(rows: {
   // Minimum 2 marchands distincts avec refus — évite la blacklist injuste
   const warn = distinctMerchantsWithFault >= 2 && globalRatio >= 0.4;
   const message = warn
-    ? `⚠️ Ce client a un historique de refus chez plusieurs marchands (${globalClientFaultReturns} refus sur ${globalScoredOrders} commandes).`
+    ? `🔴 Ce client a un historique de refus chez plusieurs marchands OrderFlow (${globalClientFaultReturns} refus sur ${globalScoredOrders} commandes).`
     : null;
 
   return {
@@ -218,4 +256,69 @@ export async function batchGetGlobalWarnings(rawPhones: string[]): Promise<Map<s
   }
 
   return result; // keyed by normalized phone
+}
+
+// ── Signal local (par marchand) ────────────────────────────────────────────────
+
+export interface LocalRiskResult {
+  message: string;
+  clientFaultReturns: number;
+  scoredOrders: number;
+}
+
+/**
+ * Vérifie le risque LOCAL (dans la boutique du marchand) pour un seul numéro.
+ * Retourne null si le client est FIABLE ou inconnu.
+ */
+export async function getLocalClientWarning(
+  rawPhone: string,
+  businessId: string,
+): Promise<LocalRiskResult | null> {
+  const phone = normalizePhone(rawPhone);
+  const c = await prisma.customer.findUnique({
+    where: { phone_businessId: { phone, businessId } },
+    select: { riskLevel: true, clientFaultReturns: true, reporteClient: true, delivered: true },
+  });
+  if (!c || (c.riskLevel !== 'MAUVAIS' && c.riskLevel !== 'A_SURVEILLER')) return null;
+  const scoredOrders = c.delivered + c.clientFaultReturns + c.reporteClient;
+  return {
+    clientFaultReturns: c.clientFaultReturns,
+    scoredOrders,
+    message: `⚠️ Ce client a déjà eu des refus dans ta boutique (${c.clientFaultReturns} refus sur ${scoredOrders} commandes).`,
+  };
+}
+
+/**
+ * Batch : vérifie le risque LOCAL pour une liste de numéros bruts, pour un seul businessId.
+ * UNE seule requête DB — pas de N+1.
+ * Retourne Map<normalizedPhone, warningMessage>.
+ */
+export async function batchGetLocalWarnings(
+  rawPhones: string[],
+  businessId: string,
+): Promise<Map<string, string>> {
+  if (rawPhones.length === 0) return new Map();
+
+  const phoneMap = new Map<string, string>();
+  for (const raw of rawPhones) phoneMap.set(raw, normalizePhone(raw));
+  const normalizedList = [...new Set(phoneMap.values())];
+
+  const customers = await prisma.customer.findMany({
+    where: {
+      phone: { in: normalizedList },
+      businessId,
+      riskLevel: { in: ['MAUVAIS', 'A_SURVEILLER'] },
+    },
+    select: { phone: true, clientFaultReturns: true, reporteClient: true, delivered: true },
+  });
+
+  const result = new Map<string, string>();
+  for (const c of customers) {
+    const scoredOrders = c.delivered + c.clientFaultReturns + c.reporteClient;
+    result.set(
+      c.phone,
+      `⚠️ Ce client a déjà eu des refus dans ta boutique (${c.clientFaultReturns} refus sur ${scoredOrders} commandes).`,
+    );
+  }
+  return result;
 }
