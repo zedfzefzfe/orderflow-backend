@@ -385,7 +385,8 @@ router.patch('/:id/status', requireAuth, async (req: AuthenticatedRequest, res) 
     });
     if (!order) { res.status(404).json({ error: 'Order not found' }); return; }
 
-    if (order.confirmationResolved) {
+    // Autoriser RETOURNE/ANNULE même si déjà résolu (correction d'erreur marchand)
+    if (order.confirmationResolved && !STATUSES_REQUIRING_REASON.includes(status)) {
       res.status(409).json({ error: 'Cette commande est déjà résolue' }); return;
     }
 
