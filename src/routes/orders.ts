@@ -6,7 +6,8 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { estimateDeliveryAt } from '../utils/estimateDelivery.js';
 import { ReturnReason } from '@prisma/client';
-import { recomputeCustomer } from '../services/customerScoring.js';
+import { recomputeCustomer, batchGetGlobalWarnings } from '../services/customerScoring.js';
+import { normalizePhone } from '../utils/normalizePhone.js';
 
 let _groq: Groq | null = null;
 function getGroq(): Groq {
@@ -58,7 +59,19 @@ router.get('/', requireAuth, async (req: AuthenticatedRequest, res) => {
       prisma.order.count({ where }),
     ]);
 
-    res.json({ orders, total, page: pageNum, limit: limitNum });
+    // Batch cross-merchant warning — une seule requête pour tous les retours de la page
+    const RETURNED = new Set(['RETOURNE', 'ANNULE', 'CANCELLED']);
+    const returnedPhones = [
+      ...new Set(orders.filter((o) => RETURNED.has(o.status)).map((o) => o.customerPhone)),
+    ];
+    const warnMap = await batchGetGlobalWarnings(returnedPhones);
+
+    const enrichedOrders = orders.map((o) => {
+      const warning = warnMap.get(normalizePhone(o.customerPhone));
+      return warning ? { ...o, clientWarning: warning } : o;
+    });
+
+    res.json({ orders: enrichedOrders, total, page: pageNum, limit: limitNum });
   } catch (err) {
     console.error('List orders error:', err);
     res.status(500).json({ error: 'Failed to fetch orders' });
