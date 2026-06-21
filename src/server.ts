@@ -13,6 +13,7 @@ import adminRoutes from './routes/admin.js';
 import analyticsRoutes from './routes/analytics.js';
 import catalogRoutes from './routes/catalog.js';
 import agentRoutes from './routes/agent.js';
+import customerRoutes from './routes/customers.js';
 import { sendAllWeeklyReports } from './services/weeklyReport.js';
 import { prisma } from './lib/prisma.js';
 import './cron/deliveryReminders.js';
@@ -47,6 +48,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/catalog', catalogRoutes);
 app.use('/api/agent', agentRoutes);
+app.use('/api/customers', customerRoutes);
 
 // 404 handler
 app.use((_req, res) => {

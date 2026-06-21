@@ -27,6 +27,7 @@ model Business {
   messageLogs          MessageLog[]
   productCatalog       ProductCatalog[]
   conversationMessages ConversationMessage[]
+  customers            Customer[]
 
   @@map("businesses")
 }
@@ -139,6 +140,29 @@ model ConversationMessage {
   business Business @relation(fields: [businessId], references: [id])
 
   @@map("conversation_messages")
+}
+
+model Customer {
+  id                 String    @id @default(uuid())
+  phone              String
+  businessId         String    @map("business_id")
+  names              String[]
+  totalOrders        Int       @default(0) @map("total_orders")
+  delivered          Int       @default(0)
+  clientFaultReturns Int       @default(0) @map("client_fault_returns")
+  reporteClient      Int       @default(0) @map("reporte_client")
+  legitReturns       Int       @default(0) @map("legit_returns")
+  faultPoints        Float     @default(0) @map("fault_points")
+  riskScore          Int       @default(0) @map("risk_score")
+  riskLevel          String    @default("FIABLE") @map("risk_level")
+  lastOrderAt        DateTime? @map("last_order_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([phone, businessId])
+  @@map("customers")
 }
 
 model PendingOrder {

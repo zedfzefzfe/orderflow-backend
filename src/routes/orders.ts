@@ -6,6 +6,7 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { estimateDeliveryAt } from '../utils/estimateDelivery.js';
 import { ReturnReason } from '@prisma/client';
+import { recomputeCustomer } from '../services/customerScoring.js';
 
 let _groq: Groq | null = null;
 function getGroq(): Groq {
@@ -429,6 +430,14 @@ router.patch('/:id/status', requireAuth, async (req: AuthenticatedRequest, res) 
 
     const updated = await prisma.order.update({ where: { id }, data });
     res.json(updated);
+
+    // Recompute customer score after terminal status change (fire-and-forget)
+    const TERMINAL = ['LIVRE', 'RETOURNE', 'ANNULE'];
+    if (TERMINAL.includes(status)) {
+      recomputeCustomer(order.customerPhone, order.businessId).catch((err) =>
+        console.error('[scoring] recompute failed:', err),
+      );
+    }
   } catch (err) {
     console.error('Update order status error:', err);
     res.status(500).json({ error: 'Failed to update order status' });
