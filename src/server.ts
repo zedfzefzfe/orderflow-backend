@@ -15,6 +15,7 @@ import catalogRoutes from './routes/catalog.js';
 import agentRoutes from './routes/agent.js';
 import { sendAllWeeklyReports } from './services/weeklyReport.js';
 import { prisma } from './lib/prisma.js';
+import './cron/deliveryReminders.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;

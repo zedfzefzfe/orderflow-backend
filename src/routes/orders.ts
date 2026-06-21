@@ -4,6 +4,8 @@ import Groq, { toFile } from 'groq-sdk';
 import Anthropic from '@anthropic-ai/sdk';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
+import { estimateDeliveryAt } from '../utils/estimateDelivery.js';
+import { ReturnReason } from '@prisma/client';
 
 let _groq: Groq | null = null;
 function getGroq(): Groq {
@@ -366,6 +368,69 @@ IMPORTANT: JSON only, no markdown.`,
   } catch (err) {
     console.error('[VOICE] Error:', err);
     res.status(500).json({ error: 'Voice processing failed' });
+  }
+});
+
+const STATUSES_REQUIRING_REASON: string[] = ['RETOURNE', 'ANNULE'];
+const VALID_RETURN_REASONS = Object.values(ReturnReason);
+
+// PATCH /api/orders/:id/status — marchand status lifecycle
+router.patch('/:id/status', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { status, returnReason } = req.body;
+
+    const order = await prisma.order.findFirst({
+      where: { id, businessId: req.user!.businessId },
+    });
+    if (!order) { res.status(404).json({ error: 'Order not found' }); return; }
+
+    if (order.confirmationResolved) {
+      res.status(409).json({ error: 'Cette commande est déjà résolue' }); return;
+    }
+
+    const VALID_STATUSES = ['CONFIRMED', 'EN_LIVRAISON', 'LIVRE', 'RETOURNE', 'ANNULE'];
+    if (!status || !VALID_STATUSES.includes(status)) {
+      res.status(400).json({ error: 'Statut invalide' }); return;
+    }
+
+    if (STATUSES_REQUIRING_REASON.includes(status)) {
+      if (!returnReason || !VALID_RETURN_REASONS.includes(returnReason)) {
+        res.status(400).json({
+          error: 'returnReason est obligatoire pour ce statut',
+          validValues: VALID_RETURN_REASONS,
+        });
+        return;
+      }
+    }
+
+    const now = new Date();
+    const data: Record<string, unknown> = { status };
+
+    if (status === 'EN_LIVRAISON') {
+      data.deliveryAttemptedAt = now;
+      data.estimatedDeliveryAt = estimateDeliveryAt(order);
+    }
+
+    if (status === 'LIVRE') {
+      data.confirmationResolved = true;
+      data.confirmationSource = 'marchand';
+      data.confirmationResolvedAt = now;
+      data.deliveredAt = now;
+    }
+
+    if (STATUSES_REQUIRING_REASON.includes(status)) {
+      data.returnReason = returnReason as ReturnReason;
+      data.confirmationResolved = true;
+      data.confirmationSource = 'marchand';
+      data.confirmationResolvedAt = now;
+    }
+
+    const updated = await prisma.order.update({ where: { id }, data });
+    res.json(updated);
+  } catch (err) {
+    console.error('Update order status error:', err);
+    res.status(500).json({ error: 'Failed to update order status' });
   }
 });
 

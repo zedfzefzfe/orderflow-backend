@@ -54,6 +54,19 @@ enum OrderStatus {
   CANCELLED
 }
 
+enum ReturnReason {
+  // Client-fault
+  INJOIGNABLE
+  REFUSE_LIVRAISON
+  FAUSSE_COMMANDE
+  ANNULE_AVANT_LIVRAISON
+  REPORTE_CLIENT
+  // Non client-fault
+  MAUVAISE_ADRESSE
+  PROBLEME_PRODUIT
+  AUTRE
+}
+
 model Order {
   id            String      @id @default(uuid())
   businessId    String      @map("business_id")
@@ -70,8 +83,17 @@ model Order {
   needsReview   Boolean     @default(false) @map("needs_review")
   rawMessage    String      @map("raw_message")
   source        String      @default("whatsapp")
-  deliveredAt   DateTime?   @map("delivered_at")
-  createdAt     DateTime    @default(now()) @map("created_at")
+  deliveredAt              DateTime?     @map("delivered_at")
+  createdAt                DateTime      @default(now()) @map("created_at")
+
+  estimatedDeliveryAt      DateTime?     @map("estimated_delivery_at")
+  confirmationResolved     Boolean       @default(false) @map("confirmation_resolved")
+  confirmationResolvedAt   DateTime?     @map("confirmation_resolved_at")
+  confirmationSource       String?       @map("confirmation_source")
+  returnReason             ReturnReason? @map("return_reason")
+  deliveryAttemptedAt      DateTime?     @map("delivery_attempted_at")
+  merchantNotifiedAt       DateTime?     @map("merchant_notified_at")
+  escalationTriggeredAt    DateTime?     @map("escalation_triggered_at")
 
   business Business @relation(fields: [businessId], references: [id])
 
