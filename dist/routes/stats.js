@@ -43,7 +43,7 @@ router.get('/', requireAuth, async (req, res) => {
                 where: baseWhere,
                 _count: { status: true },
             }),
-            prisma.order.count({ where: { businessId, needsReview: true } }),
+            prisma.order.count({ where: { ...baseWhere, needsReview: true } }),
         ]);
         const statusBreakdown = statusCounts.reduce((acc, curr) => {
             acc[curr.status] = curr._count.status;
@@ -56,32 +56,65 @@ router.get('/', requireAuth, async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch stats' });
     }
 });
-// GET /api/stats/cashflow — CA encaissé vs en attente (scopé au business)
+// GET /api/stats/cashflow — CA encaissé, en attente, à confirmer (respecte dateFrom/dateTo)
 router.get('/cashflow', requireAuth, async (req, res) => {
     try {
         const businessId = req.user.businessId;
-        const [livreesRows, retourneesCount, enAttenteRows] = await Promise.all([
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const { dateFrom, dateTo } = req.query;
+        // Build createdAt filter from query params when provided
+        const hasDateFilter = !!(dateFrom || dateTo);
+        const createdAtFilter = hasDateFilter ? {
+            ...(dateFrom ? { gte: new Date(dateFrom) } : {}),
+            // dateTo is a date string (YYYY-MM-DD) — include the full day
+            ...(dateTo ? { lt: new Date(new Date(dateTo).getTime() + 86400000) } : {}),
+        } : null;
+        const [livreesRows, enAttenteRows, aConfirmerCount, retourneesCount] = await Promise.all([
+            // caEncaisse: LIVRE — filtré par période active ou mois en cours par défaut
             prisma.order.findMany({
-                where: { businessId, status: { in: ['LIVRE', 'DELIVERED'] } },
+                where: {
+                    businessId,
+                    status: { in: ['LIVRE', 'DELIVERED'] },
+                    createdAt: createdAtFilter ?? { gte: monthStart },
+                },
                 select: { totalPrice: true, deliveryPrice: true },
             }),
+            // enAttente: CONFIRMED + EN_LIVRAISON — filtré par période si active
+            prisma.order.findMany({
+                where: {
+                    businessId,
+                    status: { in: ['CONFIRMED', 'EN_LIVRAISON'] },
+                    ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
+                },
+                select: { totalPrice: true, deliveryPrice: true },
+            }),
+            // aConfirmer: CONFIRMED + EN_LIVRAISON non résolus — filtré par période si active
             prisma.order.count({
-                where: { businessId, status: { in: ['RETOURNE', 'CANCELLED'] } },
+                where: {
+                    businessId,
+                    status: { in: ['CONFIRMED', 'EN_LIVRAISON'] },
+                    confirmationResolved: false,
+                    ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
+                },
             }),
-            prisma.order.findMany({
-                where: { businessId, status: { in: ['CONFIRMED', 'EN_LIVRAISON'] } },
-                select: { totalPrice: true, deliveryPrice: true },
+            // pour tauxLivraison — filtré par période si active
+            prisma.order.count({
+                where: {
+                    businessId,
+                    status: { in: ['RETOURNE', 'CANCELLED'] },
+                    ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
+                },
             }),
         ]);
         const sumCOD = (rows) => rows.reduce((sum, o) => sum + (o.totalPrice ?? 0) + (o.deliveryPrice ?? 0), 0);
         const caEncaisse = sumCOD(livreesRows);
-        const caEnAttente = sumCOD(enAttenteRows);
+        const enAttente = sumCOD(enAttenteRows);
         const nbLivrees = livreesRows.length;
-        const nbEnAttente = enAttenteRows.length;
         const tauxLivraison = nbLivrees + retourneesCount > 0
             ? Math.round((nbLivrees / (nbLivrees + retourneesCount)) * 100)
             : 100;
-        res.json({ caEncaisse, caEnAttente, nbLivrees, nbEnAttente, tauxLivraison });
+        res.json({ caEncaisse, enAttente, aConfirmer: aConfirmerCount, nbLivrees, tauxLivraison });
     }
     catch (err) {
         console.error('Cashflow stats error:', err);

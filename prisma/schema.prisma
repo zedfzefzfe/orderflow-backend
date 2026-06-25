@@ -90,6 +90,9 @@ model Business {
   wilaya                      MoroccanWilaya?  @map("wilaya")
   city                        String?          @map("city")
   defaultDeliveryCompany      DeliveryCompany? @map("default_delivery_company")
+  whatsappInstanceName        String?          @map("whatsapp_instance_name")
+  whatsappConnected           Boolean          @default(false) @map("whatsapp_connected")
+  whatsappFlowConfig          Json?            @map("whatsapp_flow_config")
 
   users                User[]
   orders               Order[]

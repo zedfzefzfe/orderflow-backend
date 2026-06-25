@@ -9,6 +9,13 @@ export interface ParsedOrder {
 }
 export declare function parseOrderFromMessage(messageText: string): Promise<ParsedOrder>;
 export declare const parseOrderMessage: typeof parseOrderFromMessage;
+export interface StructuredFields {
+    productCategory: string | null;
+    wilaya: string | null;
+    city: string | null;
+    deliveryCompany: string | null;
+}
+export declare function extractStructuredFields(product: string, address: string | null, rawMessage: string): Promise<StructuredFields>;
 export interface ClientMessageClassification {
     name: string | null;
     address: string | null;
