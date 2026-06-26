@@ -1,7 +1,25 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { requireAuth } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
+import { supabaseAdmin } from '../lib/supabase.js';
 import { evolutionProvider, instanceNameFor } from './evolutionProvider.js';
+// ── Image upload config ───────────────────────────────────────────────────────
+const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+const MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+const BUCKET = 'whatsapp-bouquets';
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: MAX_BYTES },
+    fileFilter: (_req, file, cb) => {
+        if (ALLOWED_MIME.has(file.mimetype)) {
+            cb(null, true);
+        }
+        else {
+            cb(new Error('TYPE_ERROR'));
+        }
+    },
+});
 const router = Router();
 // ── First-contact tracker ─────────────────────────────────────────────────────
 // In-memory map: instanceName → Set of sender phones that already received the
@@ -197,6 +215,51 @@ router.get('/flow', requireAuth, async (req, res) => {
     catch (err) {
         console.error('[whatsapp] flow GET error:', err);
         res.status(500).json({ error: 'Failed to fetch flow config' });
+    }
+});
+// POST /api/whatsapp/upload-image — upload bouquet photo to Supabase Storage
+router.post('/upload-image', requireAuth, (req, res, next) => {
+    upload.single('image')(req, res, (err) => {
+        if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+            res.status(400).json({ error: 'Fichier trop volumineux (max 5 Mo)' });
+            return;
+        }
+        if (err instanceof Error && err.message === 'TYPE_ERROR') {
+            res.status(400).json({ error: 'Type de fichier non accepté (jpeg, png, webp, gif uniquement)' });
+            return;
+        }
+        if (err) {
+            res.status(400).json({ error: 'Erreur lors de la réception du fichier' });
+            return;
+        }
+        next();
+    });
+}, async (req, res) => {
+    try {
+        if (!req.file) {
+            res.status(400).json({ error: 'Aucun fichier reçu' });
+            return;
+        }
+        const { businessId } = req.user;
+        const { buffer, mimetype, originalname } = req.file;
+        const safeName = originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${businessId}/${Date.now()}-${safeName}`;
+        // Ensure the bucket exists (creates silently if already present)
+        await supabaseAdmin.storage.createBucket(BUCKET, { public: true }).catch(() => { });
+        const { error: uploadError } = await supabaseAdmin.storage
+            .from(BUCKET)
+            .upload(path, buffer, { contentType: mimetype, upsert: false });
+        if (uploadError) {
+            console.error('[whatsapp] Supabase upload error:', uploadError);
+            res.status(500).json({ error: 'Échec du téléversement vers Supabase Storage' });
+            return;
+        }
+        const { data: { publicUrl } } = supabaseAdmin.storage.from(BUCKET).getPublicUrl(path);
+        res.json({ url: publicUrl });
+    }
+    catch (err) {
+        console.error('[whatsapp] upload-image error:', err);
+        res.status(500).json({ error: 'Erreur interne lors du téléversement' });
     }
 });
 // POST /api/whatsapp/set-webhook — manually re-register webhook without reconnecting
