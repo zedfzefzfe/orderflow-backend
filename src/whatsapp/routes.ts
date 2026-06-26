@@ -212,14 +212,61 @@ router.post('/pairing-code', requireAuth, async (req: AuthenticatedRequest, res:
   try {
     const { phoneNumber } = req.body as { phoneNumber?: string };
     if (!phoneNumber?.trim()) {
-      res.status(400).json({ error: 'phoneNumber is required' });
+      res.status(400).json({ error: 'Numéro de téléphone requis' });
       return;
     }
-    const code = await evolutionProvider.getPairingCode(req.user!.businessId, phoneNumber.trim());
+
+    // Normalize: keep digits only (strips spaces, dashes, parentheses, leading +)
+    const normalized = phoneNumber.replace(/\D/g, '');
+    if (normalized.length < 7) {
+      res.status(400).json({ error: 'Numéro de téléphone invalide' });
+      return;
+    }
+
+    const businessId = req.user!.businessId;
+
+    // Ensure the Evolution instance exists before requesting a pairing code.
+    // It may not exist yet if the user skipped the QR tab or if POST /connect
+    // failed silently. Create it now if needed, then wait for it to initialize.
+    const business = await prisma.business.findUnique({
+      where: { id: businessId },
+      select: { whatsappInstanceName: true },
+    });
+
+    if (!business?.whatsappInstanceName) {
+      const name = instanceNameFor(businessId);
+      const webhookUrl = process.env.BACKEND_URL
+        ? `${process.env.BACKEND_URL}/api/whatsapp/webhook/${name}`
+        : '';
+
+      try {
+        await evolutionProvider.createInstance(businessId);
+      } catch (createErr) {
+        const msg = String(createErr);
+        if (!msg.includes('already') && !msg.includes('exists') && !msg.includes('409')) {
+          throw createErr;
+        }
+        console.log(`[whatsapp] pairing-code: instance ${name} already exists`);
+      }
+
+      // Give Evolution time to initialize the session before requesting a pairing code
+      await new Promise<void>(r => setTimeout(r, 1500));
+
+      if (webhookUrl) {
+        await evolutionProvider.updateWebhook(name, webhookUrl);
+      }
+
+      await prisma.business.update({
+        where: { id: businessId },
+        data: { whatsappInstanceName: name, whatsappConnected: false },
+      });
+    }
+
+    const code = await evolutionProvider.getPairingCode(businessId, normalized);
     res.json({ code });
   } catch (err) {
     console.error('[whatsapp] pairing-code error:', err);
-    res.status(500).json({ error: 'Failed to get pairing code' });
+    res.status(500).json({ error: 'Impossible de générer le code de liaison. Vérifiez le numéro et réessayez.' });
   }
 });
 
