@@ -4,6 +4,12 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { evolutionProvider, instanceNameFor } from './evolutionProvider.js';
+import { getBaileysPairingCode } from './baileysPairing.js';
+
+// businessIds that connected via Baileys pairing (Evolution doesn't know about them yet).
+// Used as a fallback in GET /status so the frontend can detect the Baileys link.
+// Resets on server restart — acceptable for MVP.
+const baiSyConnected = new Set<string>();
 
 // ── Image upload config ───────────────────────────────────────────────────────
 
@@ -270,6 +276,54 @@ router.post('/pairing-code', requireAuth, async (req: AuthenticatedRequest, res:
   }
 });
 
+// POST /api/whatsapp/pairing-code-direct — uses Baileys directly (bypasses Evolution)
+// Body: { phoneNumber: string }  →  { code: "ABCD-1234" }
+router.post('/pairing-code-direct', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const raw = String((req.body as { phoneNumber?: string }).phoneNumber ?? '');
+
+    // Normalize to digits only
+    let phoneNumber = raw.replace(/\D/g, '');
+
+    // Local Moroccan format: 06xxxxxxxx → 21206... → strip leading 0 → 212xxxxxxxx
+    if (phoneNumber.startsWith('0')) {
+      phoneNumber = '212' + phoneNumber.slice(1);
+    }
+
+    if (phoneNumber.length < 10 || phoneNumber.length > 15) {
+      res.status(400).json({ error: 'Numéro invalide — utilisez le format 0612345678 ou +212612345678' });
+      return;
+    }
+
+    const businessId = req.user!.businessId;
+    const name = instanceNameFor(businessId);
+
+    const code = await getBaileysPairingCode(
+      phoneNumber,
+      name,
+      async () => {
+        // WhatsApp confirmed the link — mark as connected in DB and in-memory set
+        baiSyConnected.add(businessId);
+        await prisma.business.update({
+          where: { id: businessId },
+          data: { whatsappConnected: true },
+        }).catch(err => console.error('[baileys] DB update error:', err));
+        console.log(`[baileys] business ${businessId} marked as connected`);
+      },
+    );
+
+    res.json({ code });
+  } catch (err) {
+    const msg = String(err);
+    console.error('[whatsapp] pairing-code-direct error:', err);
+    if (msg.includes('TIMEOUT')) {
+      res.status(408).json({ error: 'Délai dépassé — réessayez dans quelques instants' });
+    } else {
+      res.status(500).json({ error: 'Impossible de générer le code de liaison' });
+    }
+  }
+});
+
 // DELETE /api/whatsapp/disconnect — logout + delete Evolution instance, clear DB
 router.delete('/disconnect', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -286,6 +340,7 @@ router.delete('/disconnect', requireAuth, async (req: AuthenticatedRequest, res:
     await fetch(`${evoBase}/instance/delete/${name}`, { method: 'DELETE', headers })
       .catch(err => console.warn('[whatsapp] delete instance error (ignored):', err));
 
+    baiSyConnected.delete(businessId);
     await prisma.business.update({
       where: { id: businessId },
       data: { whatsappConnected: false, whatsappInstanceName: null },
@@ -301,13 +356,25 @@ router.delete('/disconnect', requireAuth, async (req: AuthenticatedRequest, res:
 // GET /api/whatsapp/status — { connected: boolean }
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const status = await evolutionProvider.getStatus(req.user!.businessId);
-    // Keep DB in sync with live Evolution state
-    await prisma.business.update({
-      where: { id: req.user!.businessId },
-      data: { whatsappConnected: status.connected },
-    });
-    res.json(status);
+    const businessId = req.user!.businessId;
+    const status = await evolutionProvider.getStatus(businessId);
+
+    if (status.connected) {
+      // Evolution is connected — it takes precedence; clear any Baileys flag
+      baiSyConnected.delete(businessId);
+      await prisma.business.update({ where: { id: businessId }, data: { whatsappConnected: true } });
+      res.json({ connected: true });
+      return;
+    }
+
+    // Evolution says disconnected — check if connected via Baileys pairing
+    if (baiSyConnected.has(businessId)) {
+      res.json({ connected: true });
+      return;
+    }
+
+    await prisma.business.update({ where: { id: businessId }, data: { whatsappConnected: false } });
+    res.json({ connected: false });
   } catch (err) {
     console.error('[whatsapp] status error:', err);
     res.status(500).json({ error: 'Failed to get connection status' });
