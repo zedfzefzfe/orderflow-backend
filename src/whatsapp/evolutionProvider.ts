@@ -28,7 +28,10 @@ export interface WhatsAppProvider {
   getStatus(businessId: string): Promise<{ connected: boolean }>;
   sendText(businessId: string, to: string, text: string): Promise<void>;
   sendImage(businessId: string, to: string, imageUrl: string, caption?: string): Promise<void>;
+  /** Register or update the Evolution webhook for an already-known instanceName. */
   setWebhook(instanceName: string, webhookUrl: string): Promise<void>;
+  /** Try multiple paths to register the webhook, logging which one succeeds. */
+  updateWebhook(instanceName: string, webhookUrl: string): Promise<void>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -61,40 +64,46 @@ async function evoFetch(path: string, options: RequestInit = {}): Promise<unknow
   }
 }
 
+// Shared webhook body used by setWebhook, updateWebhook, and createInstance
+function webhookBody(webhookUrl: string): string {
+  return JSON.stringify({
+    webhook: {
+      enabled: true,
+      url: webhookUrl,
+      webhookByEvents: false,
+      webhookBase64: false,
+      events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+    },
+  });
+}
+
 // ── Evolution v2 implementation ───────────────────────────────────────────────
 
 export const evolutionProvider: WhatsAppProvider = {
   async createInstance(businessId) {
     const name = instanceNameFor(businessId);
 
-    // POST /instance/create — creates the Baileys instance
+    // Include webhook config in the create body so it is set atomically,
+    // even if the separate setWebhook call below fails or the path differs.
+    const createBody: Record<string, unknown> = {
+      instanceName: name,
+      qrcode: true,
+      integration: 'WHATSAPP-BAILEYS',
+    };
+    if (BACKEND_URL) {
+      createBody.webhook = {
+        enabled: true,
+        url: `${BACKEND_URL}/api/whatsapp/webhook/${name}`,
+        webhookByEvents: false,
+        webhookBase64: false,
+        events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+      };
+    }
+
     const data = await evoFetch('/instance/create', {
       method: 'POST',
-      body: JSON.stringify({
-        instanceName: name,
-        qrcode: true,
-        integration: 'WHATSAPP-BAILEYS',
-      }),
+      body: JSON.stringify(createBody),
     }) as Record<string, unknown>;
-
-    // Register webhook separately (more reliable than embedding in create body)
-    // Spec note: Evolution v2 uses PUT /webhook/set/:instanceName
-    if (BACKEND_URL) {
-      try {
-        await evoFetch(`/webhook/set/${name}`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            url: `${BACKEND_URL}/api/whatsapp/webhook/${name}`,
-            webhook_by_events: false,
-            webhook_base64: false,
-            events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
-          }),
-        });
-        console.log(`[evolution] Webhook registered for ${name}`);
-      } catch (e) {
-        console.warn(`[evolution] Webhook setup failed for ${name}:`, e);
-      }
-    }
 
     // Extract QR from create response — field varies by Evolution version
     const qrcode = data?.qrcode as Record<string, unknown> | undefined;
@@ -116,7 +125,6 @@ export const evolutionProvider: WhatsAppProvider = {
   async getPairingCode(businessId, phoneNumber) {
     const name = instanceNameFor(businessId);
     // Evolution v2: POST /instance/pairingCode/:instanceName with { number }
-    // (differs from spec which suggested GET with ?number= query param)
     const data = await evoFetch(`/instance/pairingCode/${name}`, {
       method: 'POST',
       body: JSON.stringify({ number: phoneNumber }),
@@ -161,19 +169,41 @@ export const evolutionProvider: WhatsAppProvider = {
     });
   },
 
+  // POST /webhook/set/:instanceName — correct method for Evolution v2.3.7
   async setWebhook(instanceName, webhookUrl) {
     await evoFetch(`/webhook/set/${instanceName}`, {
-      method: 'PUT',
-      body: JSON.stringify({
-        webhook: {
-          enabled: true,
-          url: webhookUrl,
-          webhookByEvents: false,
-          webhookBase64: false,
-          events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
-        },
-      }),
+      method: 'POST',
+      body: webhookBody(webhookUrl),
     });
     console.log(`[evolution] Webhook set for ${instanceName} → ${webhookUrl}`);
+  },
+
+  // Tries three known Evolution webhook paths in order, logs which one works.
+  // Useful when the exact path varies across self-hosted Evolution versions.
+  async updateWebhook(instanceName, webhookUrl) {
+    const candidates = [
+      { method: 'POST', path: `/webhook/set/${instanceName}` },
+      { method: 'PUT',  path: `/webhook/instance/set/${instanceName}` },
+      { method: 'PATCH', path: `/webhook/${instanceName}` },
+    ];
+
+    for (const { method, path } of candidates) {
+      try {
+        await evoFetch(path, { method, body: webhookBody(webhookUrl) });
+        console.log(`[evolution] updateWebhook succeeded: ${method} ${path} → ${webhookUrl}`);
+        return;
+      } catch (err) {
+        if (String(err).includes('404')) {
+          console.warn(`[evolution] ${method} ${path} → 404, trying next path...`);
+          continue;
+        }
+        // Non-404 error (auth failure, network error, etc.) — stop immediately
+        throw err;
+      }
+    }
+
+    throw new Error(
+      `[evolution] updateWebhook: all candidate paths returned 404 for instance ${instanceName}`,
+    );
   },
 };

@@ -142,9 +142,10 @@ router.post('/connect', requireAuth, async (req: AuthenticatedRequest, res: Resp
       console.log(`[whatsapp] Instance ${name} already exists — skipping create, re-registering webhook`);
     }
 
-    // Always (re-)register the webhook so Evolution knows our current URL
+    // Always (re-)register the webhook so Evolution knows our current URL.
+    // updateWebhook tries multiple paths to handle version differences.
     if (process.env.BACKEND_URL) {
-      await evolutionProvider.setWebhook(name, webhookUrl);
+      await evolutionProvider.updateWebhook(name, webhookUrl);
     } else {
       console.warn('[whatsapp] BACKEND_URL not set — webhook not registered');
     }
@@ -238,7 +239,7 @@ router.post('/set-webhook', requireAuth, async (req: AuthenticatedRequest, res: 
     }
     const name = instanceNameFor(req.user!.businessId);
     const webhookUrl = `${process.env.BACKEND_URL}/api/whatsapp/webhook/${name}`;
-    await evolutionProvider.setWebhook(name, webhookUrl);
+    await evolutionProvider.updateWebhook(name, webhookUrl);
     res.json({ success: true, webhookUrl });
   } catch (err) {
     console.error('[whatsapp] set-webhook error:', err);
