@@ -124,15 +124,48 @@ export const evolutionProvider: WhatsAppProvider = {
 
   async getPairingCode(businessId, phoneNumber) {
     const name = instanceNameFor(businessId);
-    // Evolution v2: POST /instance/pairingCode/:instanceName with { number }
-    const data = await evoFetch(`/instance/pairingCode/${name}`, {
-      method: 'POST',
-      body: JSON.stringify({ number: phoneNumber }),
-    }) as Record<string, unknown>;
 
-    const code = (data?.code ?? data?.pairingCode ?? '') as string;
-    if (!code) throw new Error('No pairing code returned from Evolution API');
-    return code;
+    const candidates: Array<() => Promise<unknown>> = [
+      () => {
+        console.log(`[evolution] getPairingCode: trying POST /instance/pairing-code/${name}`);
+        return evoFetch(`/instance/pairing-code/${name}`, {
+          method: 'POST',
+          body: JSON.stringify({ number: phoneNumber }),
+        });
+      },
+      () => {
+        console.log(`[evolution] getPairingCode: trying POST /instance/connect/${name} with number`);
+        return evoFetch(`/instance/connect/${name}`, {
+          method: 'POST',
+          body: JSON.stringify({ number: phoneNumber }),
+        });
+      },
+      () => {
+        console.log(`[evolution] getPairingCode: trying GET /instance/connect/${name}?number=${phoneNumber}`);
+        return evoFetch(`/instance/connect/${name}?number=${encodeURIComponent(phoneNumber)}`);
+      },
+    ];
+
+    for (const attempt of candidates) {
+      try {
+        const data = await attempt() as Record<string, unknown>;
+        const code = (data?.code ?? data?.pairingCode ?? '') as string;
+        if (code) {
+          console.log(`[evolution] getPairingCode: success, code received`);
+          return code;
+        }
+        // Response was 2xx but no code field — try next candidate
+        console.warn(`[evolution] getPairingCode: 2xx but no code field in response, trying next`);
+      } catch (err) {
+        if (String(err).includes('404')) {
+          console.warn(`[evolution] getPairingCode: 404, trying next path`);
+          continue;
+        }
+        throw err; // non-404 error — stop immediately
+      }
+    }
+
+    throw new Error(`[evolution] getPairingCode: all candidate paths failed for instance ${name}`);
   },
 
   async getStatus(businessId) {
