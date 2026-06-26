@@ -9,6 +9,7 @@ export interface WhatsAppProvider {
     }>;
     sendText(businessId: string, to: string, text: string): Promise<void>;
     sendImage(businessId: string, to: string, imageUrl: string, caption?: string): Promise<void>;
+    setWebhook(instanceName: string, webhookUrl: string): Promise<void>;
 }
 export declare function instanceNameFor(businessId: string): string;
 export declare const evolutionProvider: WhatsAppProvider;

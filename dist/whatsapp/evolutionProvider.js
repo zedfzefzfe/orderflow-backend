@@ -134,5 +134,20 @@ export const evolutionProvider = {
             }),
         });
     },
+    async setWebhook(instanceName, webhookUrl) {
+        await evoFetch(`/webhook/set/${instanceName}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+                webhook: {
+                    enabled: true,
+                    url: webhookUrl,
+                    webhookByEvents: false,
+                    webhookBase64: false,
+                    events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+                },
+            }),
+        });
+        console.log(`[evolution] Webhook set for ${instanceName} → ${webhookUrl}`);
+    },
 };
 //# sourceMappingURL=evolutionProvider.js.map

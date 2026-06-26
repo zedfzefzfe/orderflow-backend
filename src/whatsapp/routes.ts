@@ -121,16 +121,38 @@ router.post('/webhook/:instanceName', async (req: Request, res: Response) => {
 
 // ── Auth-protected routes ─────────────────────────────────────────────────────
 
-// POST /api/whatsapp/connect — create (or re-create) Evolution instance, return QR
+// POST /api/whatsapp/connect — create (or re-use) Evolution instance, return QR
 router.post('/connect', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const businessId = req.user!.businessId;
-    const { qr } = await evolutionProvider.createInstance(businessId);
+    const name = instanceNameFor(businessId);
+    const webhookUrl = `${process.env.BACKEND_URL}/api/whatsapp/webhook/${name}`;
+
+    // Attempt to create the instance; tolerate "already exists" errors so that
+    // re-connecting an existing instance still reaches the setWebhook call below.
+    let qr: string | null = null;
+    try {
+      const result = await evolutionProvider.createInstance(businessId);
+      qr = result.qr;
+    } catch (createErr) {
+      const msg = String(createErr);
+      if (!msg.includes('already') && !msg.includes('exists') && !msg.includes('409')) {
+        throw createErr; // unexpected error — re-throw so the outer catch handles it
+      }
+      console.log(`[whatsapp] Instance ${name} already exists — skipping create, re-registering webhook`);
+    }
+
+    // Always (re-)register the webhook so Evolution knows our current URL
+    if (process.env.BACKEND_URL) {
+      await evolutionProvider.setWebhook(name, webhookUrl);
+    } else {
+      console.warn('[whatsapp] BACKEND_URL not set — webhook not registered');
+    }
 
     await prisma.business.update({
       where: { id: businessId },
       data: {
-        whatsappInstanceName: instanceNameFor(businessId),
+        whatsappInstanceName: name,
         whatsappConnected: false,
       },
     });
@@ -138,7 +160,7 @@ router.post('/connect', requireAuth, async (req: AuthenticatedRequest, res: Resp
     res.json({ qr });
   } catch (err) {
     console.error('[whatsapp] connect error:', err);
-    res.status(500).json({ error: 'Failed to create WhatsApp instance' });
+    res.status(500).json({ error: 'Failed to connect WhatsApp instance' });
   }
 });
 
@@ -204,6 +226,23 @@ router.get('/flow', requireAuth, async (req: AuthenticatedRequest, res: Response
   } catch (err) {
     console.error('[whatsapp] flow GET error:', err);
     res.status(500).json({ error: 'Failed to fetch flow config' });
+  }
+});
+
+// POST /api/whatsapp/set-webhook — manually re-register webhook without reconnecting
+router.post('/set-webhook', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    if (!process.env.BACKEND_URL) {
+      res.status(500).json({ error: 'BACKEND_URL is not configured on the server' });
+      return;
+    }
+    const name = instanceNameFor(req.user!.businessId);
+    const webhookUrl = `${process.env.BACKEND_URL}/api/whatsapp/webhook/${name}`;
+    await evolutionProvider.setWebhook(name, webhookUrl);
+    res.json({ success: true, webhookUrl });
+  } catch (err) {
+    console.error('[whatsapp] set-webhook error:', err);
+    res.status(500).json({ error: 'Failed to register webhook' });
   }
 });
 

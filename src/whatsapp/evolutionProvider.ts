@@ -28,6 +28,7 @@ export interface WhatsAppProvider {
   getStatus(businessId: string): Promise<{ connected: boolean }>;
   sendText(businessId: string, to: string, text: string): Promise<void>;
   sendImage(businessId: string, to: string, imageUrl: string, caption?: string): Promise<void>;
+  setWebhook(instanceName: string, webhookUrl: string): Promise<void>;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -158,5 +159,21 @@ export const evolutionProvider: WhatsAppProvider = {
         caption: caption ?? '',
       }),
     });
+  },
+
+  async setWebhook(instanceName, webhookUrl) {
+    await evoFetch(`/webhook/set/${instanceName}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        webhook: {
+          enabled: true,
+          url: webhookUrl,
+          webhookByEvents: false,
+          webhookBase64: false,
+          events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
+        },
+      }),
+    });
+    console.log(`[evolution] Webhook set for ${instanceName} → ${webhookUrl}`);
   },
 };
