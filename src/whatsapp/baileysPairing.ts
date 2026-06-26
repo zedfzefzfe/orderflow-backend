@@ -4,7 +4,6 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import { rm } from 'fs/promises';
 
-const PAIRING_TIMEOUT_MS = 30_000;
 const SOCKET_KEEPALIVE_MS = 90_000;
 
 /**
@@ -34,79 +33,75 @@ export async function getBaileysPairingCode(
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-  return new Promise<string>((resolve, reject) => {
-    let settled = false;
-
-    const timer = setTimeout(async () => {
-      if (!settled) {
-        settled = true;
-        await cleanup().catch(() => {});
-        reject(new Error('TIMEOUT'));
-      }
-    }, PAIRING_TIMEOUT_MS);
-
-    try {
-      sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: false,
-        browser: Browsers.macOS('Desktop'),
-      });
-    } catch (err) {
-      clearTimeout(timer);
-      void cleanup();
-      reject(err);
-      return;
-    }
+  async function attempt(): Promise<string> {
+    sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: false,
+      shouldSyncHistoryMessage: () => false,
+      browser: Browsers.ubuntu('Chrome'),
+    });
 
     if (typeof sock.requestPairingCode !== 'function') {
-      clearTimeout(timer);
-      void cleanup();
-      reject(new Error('requestPairingCode not available — upgrade @whiskeysockets/baileys'));
-      return;
+      throw new Error('requestPairingCode not available — upgrade @whiskeysockets/baileys');
     }
 
     sock.ev.on('creds.update', saveCreds);
 
-    let codeRequested = false;
-
-    sock.ev.on('connection.update', async (update) => {
-      const { connection } = update;
-      console.log(`[baileys:${instanceName}] connection → ${connection ?? 'n/a'}`);
-
-      // Request pairing code the moment the socket can talk to WhatsApp
-      if (connection === 'connecting' && !codeRequested) {
-        codeRequested = true;
-        try {
-          console.log(`[baileys:${instanceName}] requesting pairing code for ${phoneNumber}`);
-          const code = await sock!.requestPairingCode(phoneNumber);
-
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            // Crockford base32 comes back as 8 chars without a dash — format it
-            const formatted = code.includes('-') ? code : code.replace(/^(.{4})(.{4})$/, '$1-$2');
-            console.log(`[baileys:${instanceName}] code obtained: ${formatted}`);
-            // Keep socket alive so the merchant can complete the link in WhatsApp
-            keepAliveTimer = setTimeout(() => void cleanup(), SOCKET_KEEPALIVE_MS);
-            resolve(formatted);
-          }
-        } catch (err) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            await cleanup().catch(() => {});
-            reject(err);
-          }
+    // Step 1: wait until the socket has established contact with WhatsApp servers.
+    // 'connecting' or a QR emission both mean the WS handshake succeeded and
+    // sendNode() is safe to call. A 'close' before either means the connection
+    // was rejected — surface it so the caller can retry.
+    console.log(`[baileys:${instanceName}] waiting for WhatsApp handshake...`);
+    await new Promise<void>((resolve, reject) => {
+      const t = setTimeout(
+        () => reject(new Error('Timeout waiting for WhatsApp connection')),
+        15_000,
+      );
+      sock!.ev.on('connection.update', (update) => {
+        if (update.connection === 'connecting' || update.qr) {
+          clearTimeout(t);
+          resolve();
         }
-      }
+        if (update.connection === 'close' && !update.qr) {
+          clearTimeout(t);
+          reject(new Error('Connection closed before ready'));
+        }
+      });
+    });
 
-      // Fired when the merchant enters the code and WhatsApp confirms the link
-      if (connection === 'open' && onConnected) {
+    // Step 2: socket is ready — request the pairing code.
+    console.log(`[baileys:${instanceName}] requesting pairing code for ${phoneNumber}`);
+    const code = await sock.requestPairingCode(phoneNumber);
+
+    const formatted = code.includes('-') ? code : code.replace(/^(.{4})(.{4})$/, '$1-$2');
+    console.log(`[baileys:${instanceName}] code obtained: ${formatted}`);
+
+    // Step 3: keep socket alive and listen for the merchant completing the link.
+    sock.ev.on('connection.update', async (update) => {
+      if (update.connection === 'open' && onConnected) {
         console.log(`[baileys:${instanceName}] link confirmed — calling onConnected`);
         onConnected().catch(err =>
           console.error(`[baileys:${instanceName}] onConnected error:`, err),
         );
       }
     });
-  });
+
+    keepAliveTimer = setTimeout(() => void cleanup(), SOCKET_KEEPALIVE_MS);
+    return formatted;
+  }
+
+  try {
+    return await attempt();
+  } catch (firstErr) {
+    console.warn(`[baileys:${instanceName}] first attempt failed (${String(firstErr)}), retrying in 2s…`);
+    // Retry once after 2 s — WhatsApp sometimes closes the connection on the
+    // first try (428 / connection closed before ready).
+    await new Promise<void>(r => setTimeout(r, 2_000));
+    try {
+      return await attempt();
+    } catch (secondErr) {
+      await cleanup();
+      throw secondErr;
+    }
+  }
 }
