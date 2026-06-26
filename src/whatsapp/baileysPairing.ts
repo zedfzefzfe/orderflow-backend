@@ -4,29 +4,22 @@ import makeWASocket, {
 } from '@whiskeysockets/baileys';
 import { rm } from 'fs/promises';
 
-const SOCKET_KEEPALIVE_MS = 90_000;
-
 /**
- * Creates a temporary Baileys session, registers a pairing code with WhatsApp
- * for the given phone number, and returns the formatted 8-character code
- * (e.g. "ABCD-1234"). The socket stays alive for 90 s so the merchant can
- * complete the link; it is cleaned up automatically afterwards.
+ * Creates a temporary Baileys session solely to obtain a WhatsApp pairing code.
+ * The session is closed and cleaned up immediately after the code is returned —
+ * it is NOT kept alive. The ongoing WhatsApp connection is managed by Evolution.
  *
  * @param phoneNumber  Digits only, e.g. "212625869380"
  * @param instanceName Used to name the temp auth directory under /tmp
- * @param onConnected  Called when WhatsApp confirms the link (connection 'open')
  */
 export async function getBaileysPairingCode(
   phoneNumber: string,
   instanceName: string,
-  onConnected?: () => Promise<void>,
 ): Promise<string> {
-  const authDir = `/tmp/pairing-${instanceName}-${Date.now()}`;
-  let keepAliveTimer: ReturnType<typeof setTimeout> | null = null;
+  const authDir = `/tmp/${instanceName}`;
   let sock: ReturnType<typeof makeWASocket> | undefined;
 
   async function cleanup(): Promise<void> {
-    if (keepAliveTimer !== null) clearTimeout(keepAliveTimer);
     try { sock?.end(new Error('cleanup')); } catch { /* ignore */ }
     await rm(authDir, { recursive: true, force: true }).catch(() => {});
   }
@@ -37,7 +30,6 @@ export async function getBaileysPairingCode(
     sock = makeWASocket({
       auth: state,
       printQRInTerminal: false,
-      shouldSyncHistoryMessage: () => false,
       browser: Browsers.ubuntu('Chrome'),
     });
 
@@ -47,8 +39,8 @@ export async function getBaileysPairingCode(
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Step 1: wait until the socket has established contact with WhatsApp servers.
-    // 'connecting' or a QR emission both mean the WS handshake succeeded and
+    // Wait until the socket has established contact with WhatsApp servers.
+    // 'connecting' or a QR emission both confirm the WS handshake is done and
     // sendNode() is safe to call. A 'close' before either means the connection
     // was rejected — surface it so the caller can retry.
     console.log(`[baileys:${instanceName}] waiting for WhatsApp handshake...`);
@@ -69,24 +61,13 @@ export async function getBaileysPairingCode(
       });
     });
 
-    // Step 2: socket is ready — request the pairing code.
     console.log(`[baileys:${instanceName}] requesting pairing code for ${phoneNumber}`);
     const code = await sock.requestPairingCode(phoneNumber);
-
     const formatted = code.includes('-') ? code : code.replace(/^(.{4})(.{4})$/, '$1-$2');
     console.log(`[baileys:${instanceName}] code obtained: ${formatted}`);
 
-    // Step 3: keep socket alive and listen for the merchant completing the link.
-    sock.ev.on('connection.update', async (update) => {
-      if (update.connection === 'open' && onConnected) {
-        console.log(`[baileys:${instanceName}] link confirmed — calling onConnected`);
-        onConnected().catch(err =>
-          console.error(`[baileys:${instanceName}] onConnected error:`, err),
-        );
-      }
-    });
-
-    keepAliveTimer = setTimeout(() => void cleanup(), SOCKET_KEEPALIVE_MS);
+    // Temp session only needed to register the code — close immediately.
+    await cleanup();
     return formatted;
   }
 
@@ -94,8 +75,7 @@ export async function getBaileysPairingCode(
     return await attempt();
   } catch (firstErr) {
     console.warn(`[baileys:${instanceName}] first attempt failed (${String(firstErr)}), retrying in 2s…`);
-    // Retry once after 2 s — WhatsApp sometimes closes the connection on the
-    // first try (428 / connection closed before ready).
+    // Retry once — WhatsApp sometimes closes the connection on the first try (428).
     await new Promise<void>(r => setTimeout(r, 2_000));
     try {
       return await attempt();

@@ -296,21 +296,10 @@ router.post('/pairing-code-direct', requireAuth, async (req: AuthenticatedReques
     }
 
     const businessId = req.user!.businessId;
-    const name = instanceNameFor(businessId);
+    // Use a unique temp name that cannot clash with any Evolution instance name
+    const tempName = `pairing-temp-${Date.now()}`;
 
-    const code = await getBaileysPairingCode(
-      phoneNumber,
-      name,
-      async () => {
-        // WhatsApp confirmed the link — mark as connected in DB and in-memory set
-        baiSyConnected.add(businessId);
-        await prisma.business.update({
-          where: { id: businessId },
-          data: { whatsappConnected: true },
-        }).catch(err => console.error('[baileys] DB update error:', err));
-        console.log(`[baileys] business ${businessId} marked as connected`);
-      },
-    );
+    const code = await getBaileysPairingCode(phoneNumber, tempName);
 
     res.json({ code });
   } catch (err) {
