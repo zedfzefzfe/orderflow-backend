@@ -270,6 +270,34 @@ router.post('/pairing-code', requireAuth, async (req: AuthenticatedRequest, res:
   }
 });
 
+// DELETE /api/whatsapp/disconnect — logout + delete Evolution instance, clear DB
+router.delete('/disconnect', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const businessId = req.user!.businessId;
+    const name = instanceNameFor(businessId);
+    const evoBase = process.env.EVOLUTION_API_URL!;
+    const headers = { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! };
+
+    // Logout session — ignore errors (instance may already be logged out or not exist)
+    await fetch(`${evoBase}/instance/logout/${name}`, { method: 'DELETE', headers })
+      .catch(err => console.warn('[whatsapp] logout error (ignored):', err));
+
+    // Delete instance from Evolution — ignore errors
+    await fetch(`${evoBase}/instance/delete/${name}`, { method: 'DELETE', headers })
+      .catch(err => console.warn('[whatsapp] delete instance error (ignored):', err));
+
+    await prisma.business.update({
+      where: { id: businessId },
+      data: { whatsappConnected: false, whatsappInstanceName: null },
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[whatsapp] disconnect error:', err);
+    res.status(500).json({ error: 'Failed to disconnect WhatsApp instance' });
+  }
+});
+
 // GET /api/whatsapp/status — { connected: boolean }
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
