@@ -43,7 +43,8 @@ function getContacted(instance: string): Set<string> {
 
 interface FlowConfig {
   enabled: boolean;
-  imageUrl: string;
+  imageUrl?: string;    // legacy single-image field — kept for backward compat reads
+  imageUrls?: string[]; // new multi-image array
   welcomeMessage: string;
   question: string;
   replyVous: string;
@@ -105,8 +106,18 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
       // First inbound message from this sender — send the welcome flow
       contacted.add(senderPhone);
 
-      if (flowConfig.imageUrl) {
-        await evolutionProvider.sendImage(business.id, senderPhone, flowConfig.imageUrl);
+      // Resolve image list — support new array format and legacy single-url
+      const imageUrls: string[] =
+        Array.isArray(flowConfig.imageUrls) && flowConfig.imageUrls.length > 0
+          ? flowConfig.imageUrls
+          : flowConfig.imageUrl ? [flowConfig.imageUrl] : [];
+
+      for (let i = 0; i < imageUrls.length; i++) {
+        await evolutionProvider.sendImage(business.id, senderPhone, imageUrls[i]);
+        if (i < imageUrls.length - 1) {
+          // 500 ms gap so WhatsApp doesn't bundle or rate-limit sequential images
+          await new Promise<void>(r => setTimeout(r, 500));
+        }
       }
       if (flowConfig.welcomeMessage) {
         await evolutionProvider.sendText(business.id, senderPhone, flowConfig.welcomeMessage);
@@ -237,7 +248,7 @@ router.get('/flow', requireAuth, async (req: AuthenticatedRequest, res: Response
     });
     const defaultConfig: FlowConfig = {
       enabled: false,
-      imageUrl: '',
+      imageUrls: [],
       welcomeMessage: '',
       question: "C'est pour vous ou un cadeau ? 🌸",
       replyVous: '',
@@ -325,12 +336,17 @@ router.post('/set-webhook', requireAuth, async (req: AuthenticatedRequest, res: 
 // PUT /api/whatsapp/flow — save welcome-flow config
 router.put('/flow', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { enabled, imageUrl, welcomeMessage, question, replyVous, replyCadeau } =
+    const { enabled, imageUrl, imageUrls: rawImageUrls, welcomeMessage, question, replyVous, replyCadeau } =
       req.body as Partial<FlowConfig>;
+
+    // Normalize to array — accept new imageUrls array or legacy imageUrl string
+    const imageUrls = Array.isArray(rawImageUrls)
+      ? rawImageUrls.filter((u): u is string => typeof u === 'string' && u.length > 0)
+      : imageUrl ? [String(imageUrl)] : [];
 
     const config: FlowConfig = {
       enabled: Boolean(enabled),
-      imageUrl: String(imageUrl ?? ''),
+      imageUrls,
       welcomeMessage: String(welcomeMessage ?? ''),
       question: String(question ?? ''),
       replyVous: String(replyVous ?? ''),
