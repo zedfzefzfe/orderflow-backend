@@ -298,6 +298,57 @@ router.delete('/disconnect', requireAuth, async (req: AuthenticatedRequest, res:
   }
 });
 
+// POST /api/whatsapp/send-qr — send QR code image via WhatsApp to a recipient number
+router.post('/send-qr', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const { recipientNumber, qrBase64 } = req.body as { recipientNumber?: string; qrBase64?: string };
+    if (!recipientNumber || !qrBase64) {
+      res.status(400).json({ error: 'recipientNumber and qrBase64 are required' });
+      return;
+    }
+
+    // Normalize Moroccan numbers: 06x/07x → 2126x/2127x, strip leading +
+    let number = recipientNumber.trim().replace(/\s+/g, '');
+    if (number.startsWith('0')) number = '212' + number.slice(1);
+    else if (number.startsWith('+')) number = number.slice(1);
+    if (!/^\d{10,15}$/.test(number)) {
+      res.status(400).json({ error: 'Numéro de téléphone invalide' });
+      return;
+    }
+
+    // Strip data URL prefix if present (e.g. "data:image/png;base64,...")
+    const base64 = qrBase64.replace(/^data:image\/[a-z]+;base64,/, '');
+
+    const name = instanceNameFor(req.user!.businessId);
+    const evoBase = process.env.EVOLUTION_API_URL!;
+    const headers = { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! };
+
+    const evoRes = await fetch(`${evoBase}/message/sendMedia/${name}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        number,
+        mediatype: 'image',
+        mimetype: 'image/png',
+        media: base64,
+        caption: '📱 Scannez ce QR code dans WhatsApp → Appareils connectés → Lier un appareil',
+      }),
+    });
+
+    if (!evoRes.ok) {
+      const text = await evoRes.text();
+      console.error('[whatsapp] send-qr Evolution error:', evoRes.status, text);
+      res.status(500).json({ error: "Impossible d'envoyer le QR. Vérifiez que le numéro est sur WhatsApp." });
+      return;
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error('[whatsapp] send-qr error:', err);
+    res.status(500).json({ error: "Impossible d'envoyer le QR" });
+  }
+});
+
 // GET /api/whatsapp/status — { connected: boolean }
 router.get('/status', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
