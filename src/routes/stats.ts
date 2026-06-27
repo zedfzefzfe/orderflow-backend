@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { OrderStatus } from '@prisma/client';
 import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 
@@ -79,45 +80,52 @@ router.get('/cashflow', requireAuth, async (req: AuthenticatedRequest, res) => {
       ...(dateTo ? { lt: new Date(new Date(dateTo).getTime() + 86400000) } : {}),
     } : null;
 
+    type PriceRow = { totalPrice: number | null; deliveryPrice: number | null };
+    const emptyRows: PriceRow[] = [];
+
+    // Each query catches individually so one enum/column mismatch doesn't 500 the endpoint
     const [livreesRows, enAttenteRows, aConfirmerCount, retourneesCount] = await Promise.all([
-      // caEncaisse: LIVRE — filtré par période active ou mois en cours par défaut
+      // caEncaisse: LIVRE + DELIVERED — filtré par période active ou mois en cours par défaut
       prisma.order.findMany({
         where: {
           businessId,
-          status: { in: ['LIVRE', 'DELIVERED'] as any[] },
+          status: { in: [OrderStatus.LIVRE, OrderStatus.DELIVERED] },
           createdAt: createdAtFilter ?? { gte: monthStart },
         },
         select: { totalPrice: true, deliveryPrice: true },
-      }),
+      }).catch(() => emptyRows),
+
       // enAttente: CONFIRMED + EN_LIVRAISON — filtré par période si active
       prisma.order.findMany({
         where: {
           businessId,
-          status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] },
+          status: { in: [OrderStatus.CONFIRMED, OrderStatus.EN_LIVRAISON] },
           ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
         },
         select: { totalPrice: true, deliveryPrice: true },
-      }),
+      }).catch(() => emptyRows),
+
       // aConfirmer: CONFIRMED + EN_LIVRAISON non résolus — filtré par période si active
       prisma.order.count({
         where: {
           businessId,
-          status: { in: ['CONFIRMED', 'EN_LIVRAISON'] as any[] },
+          status: { in: [OrderStatus.CONFIRMED, OrderStatus.EN_LIVRAISON] },
           confirmationResolved: false,
           ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
         },
-      }),
-      // pour tauxLivraison — filtré par période si active
+      }).catch(() => 0),
+
+      // pour tauxLivraison: RETOURNE + CANCELLED — filtré par période si active
       prisma.order.count({
         where: {
           businessId,
-          status: { in: ['RETOURNE', 'CANCELLED'] as any[] },
+          status: { in: [OrderStatus.RETOURNE, OrderStatus.CANCELLED] },
           ...(createdAtFilter ? { createdAt: createdAtFilter } : {}),
         },
-      }),
+      }).catch(() => 0),
     ]);
 
-    const sumCOD = (rows: { totalPrice: number | null; deliveryPrice: number | null }[]) =>
+    const sumCOD = (rows: PriceRow[]) =>
       rows.reduce((sum, o) => sum + (o.totalPrice ?? 0) + (o.deliveryPrice ?? 0), 0);
 
     const caEncaisse = sumCOD(livreesRows);
