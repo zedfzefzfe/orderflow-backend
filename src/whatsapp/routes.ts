@@ -25,19 +25,6 @@ const upload = multer({
 
 const router = Router();
 
-// ── First-contact tracker ─────────────────────────────────────────────────────
-// In-memory map: instanceName → Set of sender phones that already received the
-// welcome flow. Resets on server restart, which only means the welcome message
-// re-triggers — acceptable for MVP. Upgrade path: replace with a DB table
-// (e.g. whatsapp_contacted_senders) if persistence across restarts is needed.
-const contactedSenders = new Map<string, Set<string>>();
-
-function getContacted(instance: string): Set<string> {
-  if (!contactedSenders.has(instance)) {
-    contactedSenders.set(instance, new Set<string>());
-  }
-  return contactedSenders.get(instance)!;
-}
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
@@ -100,11 +87,18 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
     const flowConfig = business.whatsappFlowConfig as FlowConfig | null;
     if (!flowConfig?.enabled) return;
 
-    const contacted = getContacted(instanceName);
+    // Check DB for an existing session — persists across server restarts
+    const existingSession = await prisma.whatsappSession.findUnique({
+      where: { phoneNumber_businessId: { phoneNumber: senderPhone, businessId: business.id } },
+    });
 
-    if (!contacted.has(senderPhone)) {
-      // First inbound message from this sender — send the welcome flow
-      contacted.add(senderPhone);
+    if (!existingSession) {
+      // First contact — record the session then send the welcome flow
+      await prisma.whatsappSession.create({
+        data: { businessId: business.id, phoneNumber: senderPhone },
+      });
+
+      console.log(`[webhook] First contact from ${senderPhone} — triggering welcome flow`);
 
       // Resolve image list — support new array format and legacy single-url
       const imageUrls: string[] =
@@ -129,6 +123,8 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
       await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyVous);
     } else if (rawText.includes('cadeau') && flowConfig.replyCadeau) {
       await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyCadeau);
+    } else {
+      console.log(`[webhook] Returning contact ${senderPhone} — no auto-reply, merchant handles manually`);
     }
   }
 }

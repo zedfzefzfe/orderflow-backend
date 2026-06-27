@@ -100,6 +100,7 @@ model Business {
   productCatalog       ProductCatalog[]
   conversationMessages ConversationMessage[]
   customers            Customer[]
+  whatsappSessions     WhatsappSession[]
 
   @@map("businesses")
 }
@@ -244,6 +245,20 @@ model Customer {
 
   @@unique([phone, businessId])
   @@map("customers")
+}
+
+model WhatsappSession {
+  id            String   @id @default(cuid())
+  businessId    String   @map("business_id")
+  phoneNumber   String   @map("phone_number")
+  flowCompleted Boolean  @default(false) @map("flow_completed")
+  createdAt     DateTime @default(now()) @map("created_at")
+  lastMessageAt DateTime @updatedAt @map("last_message_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@unique([phoneNumber, businessId])
+  @@map("whatsapp_sessions")
 }
 
 model PendingOrder {
