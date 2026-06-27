@@ -26,6 +26,10 @@ const upload = multer({
 const router = Router();
 
 
+// Exact pre-filled message WhatsApp sends when a user clicks a Meta Click-to-WhatsApp ad.
+// The automation flow only triggers on this message — all other messages are ignored.
+const AD_TRIGGER_MESSAGE = 'Montrez-moi vos modèles dispo 💐';
+
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
 interface FlowConfig {
@@ -124,11 +128,19 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
 
     const message = (data.message ?? {}) as Record<string, unknown>;
     const extendedText = (message.extendedTextMessage ?? {}) as Record<string, unknown>;
-    const rawText = (
+    // Preserve original case for the ad-trigger exact match; use lowercase for vous/cadeau
+    const incomingText = (
       (message.conversation as string) ??
       (extendedText.text as string) ??
       ''
-    ).toLowerCase();
+    );
+    const rawText = incomingText.toLowerCase();
+
+    // Only trigger on the Meta Ads pre-filled message — exact match, with a loose
+    // fallback in case WhatsApp truncates the emoji or encoding differs slightly
+    const isAdTrigger =
+      incomingText.trim() === AD_TRIGGER_MESSAGE.trim() ||
+      incomingText.includes('Montrez-moi vos modèles dispo');
 
     const flowConfig = business.whatsappFlowConfig as FlowConfig | null;
     if (!flowConfig?.enabled) return;
@@ -138,16 +150,16 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
       where: { phoneNumber_businessId: { phoneNumber: senderPhone, businessId: business.id } },
     });
 
-    if (!existingSession) {
-      // Create the session IMMEDIATELY so any follow-up messages during the
-      // delay window don't trigger a second flow.
+    if (!existingSession && isAdTrigger) {
+      // Create the session IMMEDIATELY so follow-up messages (including the ad message
+      // sent a second time) during the delay window don't trigger a second flow.
       await prisma.whatsappSession.create({
         data: { businessId: business.id, phoneNumber: senderPhone },
       });
 
       // 60–75 s jitter so the reply never feels like a cron job
       const delay = 60_000 + Math.floor(Math.random() * 15_000);
-      console.log(`[webhook] First contact from ${senderPhone} — welcome flow scheduled in ${Math.round(delay / 1000)}s`);
+      console.log(`[webhook] Ad trigger from ${senderPhone} — welcome flow scheduled in ${Math.round(delay / 1000)}s`);
 
       // Capture values needed by the closure (avoids holding the full business object)
       const businessId = business.id;
@@ -159,12 +171,12 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
           .catch(err => console.error(`[webhook] Delayed welcome flow error for ${senderPhone}:`, err));
       }, delay);
 
-    } else if (rawText.includes('vous') && flowConfig.replyVous) {
+    } else if (existingSession && rawText.includes('vous') && flowConfig.replyVous) {
       await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyVous);
-    } else if (rawText.includes('cadeau') && flowConfig.replyCadeau) {
+    } else if (existingSession && rawText.includes('cadeau') && flowConfig.replyCadeau) {
       await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyCadeau);
     } else {
-      console.log(`[webhook] Returning contact ${senderPhone} — no auto-reply, merchant handles manually`);
+      console.log(`[webhook] ${senderPhone} — ignored (isAdTrigger=${isAdTrigger}, hasSession=${!!existingSession})`);
     }
   }
 }
