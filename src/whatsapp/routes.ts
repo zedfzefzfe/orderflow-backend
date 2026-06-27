@@ -38,6 +38,52 @@ interface FlowConfig {
   replyCadeau: string;
 }
 
+// Show "typing…" indicator before a message — non-critical, silently ignored if
+// the Evolution instance doesn't support this endpoint or the call fails.
+async function sendTypingPresence(instanceName: string, phoneNumber: string, durationMs: number): Promise<void> {
+  try {
+    await fetch(`${process.env.EVOLUTION_API_URL}/chat/sendPresence/${instanceName}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! },
+      body: JSON.stringify({ number: phoneNumber, options: { presence: 'composing', delay: durationMs } }),
+    });
+  } catch {
+    // Presence API is optional — never crash the flow if it fails
+  }
+}
+
+// Send the full first-contact flow: bouquet gallery → welcome → question
+async function sendWelcomeFlow(
+  businessId: string,
+  instanceName: string,
+  senderPhone: string,
+  flowConfig: FlowConfig,
+): Promise<void> {
+  const imageUrls: string[] =
+    Array.isArray(flowConfig.imageUrls) && flowConfig.imageUrls.length > 0
+      ? flowConfig.imageUrls
+      : flowConfig.imageUrl ? [flowConfig.imageUrl] : [];
+
+  for (let i = 0; i < imageUrls.length; i++) {
+    await sendTypingPresence(instanceName, senderPhone, 2000);
+    await evolutionProvider.sendImage(businessId, senderPhone, imageUrls[i]);
+    if (i < imageUrls.length - 1) {
+      // Brief gap so WhatsApp doesn't bundle sequential images
+      await new Promise<void>(r => setTimeout(r, 500));
+    }
+  }
+
+  if (flowConfig.welcomeMessage) {
+    await sendTypingPresence(instanceName, senderPhone, 3000);
+    await evolutionProvider.sendText(businessId, senderPhone, flowConfig.welcomeMessage);
+  }
+
+  if (flowConfig.question) {
+    await sendTypingPresence(instanceName, senderPhone, 2000);
+    await evolutionProvider.sendText(businessId, senderPhone, flowConfig.question);
+  }
+}
+
 async function processWebhook(instanceName: string, payload: Record<string, unknown>): Promise<void> {
   const business = await prisma.business.findFirst({
     where: { whatsappInstanceName: instanceName },
@@ -93,32 +139,26 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
     });
 
     if (!existingSession) {
-      // First contact — record the session then send the welcome flow
+      // Create the session IMMEDIATELY so any follow-up messages during the
+      // delay window don't trigger a second flow.
       await prisma.whatsappSession.create({
         data: { businessId: business.id, phoneNumber: senderPhone },
       });
 
-      console.log(`[webhook] First contact from ${senderPhone} — triggering welcome flow`);
+      // 60–75 s jitter so the reply never feels like a cron job
+      const delay = 60_000 + Math.floor(Math.random() * 15_000);
+      console.log(`[webhook] First contact from ${senderPhone} — welcome flow scheduled in ${Math.round(delay / 1000)}s`);
 
-      // Resolve image list — support new array format and legacy single-url
-      const imageUrls: string[] =
-        Array.isArray(flowConfig.imageUrls) && flowConfig.imageUrls.length > 0
-          ? flowConfig.imageUrls
-          : flowConfig.imageUrl ? [flowConfig.imageUrl] : [];
+      // Capture values needed by the closure (avoids holding the full business object)
+      const businessId = business.id;
+      const flowSnapshot = { ...flowConfig } as FlowConfig;
 
-      for (let i = 0; i < imageUrls.length; i++) {
-        await evolutionProvider.sendImage(business.id, senderPhone, imageUrls[i]);
-        if (i < imageUrls.length - 1) {
-          // 500 ms gap so WhatsApp doesn't bundle or rate-limit sequential images
-          await new Promise<void>(r => setTimeout(r, 500));
-        }
-      }
-      if (flowConfig.welcomeMessage) {
-        await evolutionProvider.sendText(business.id, senderPhone, flowConfig.welcomeMessage);
-      }
-      if (flowConfig.question) {
-        await evolutionProvider.sendText(business.id, senderPhone, flowConfig.question);
-      }
+      // Fire-and-forget: processWebhook returns immediately; flow runs after delay
+      setTimeout(() => {
+        sendWelcomeFlow(businessId, instanceName, senderPhone, flowSnapshot)
+          .catch(err => console.error(`[webhook] Delayed welcome flow error for ${senderPhone}:`, err));
+      }, delay);
+
     } else if (rawText.includes('vous') && flowConfig.replyVous) {
       await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyVous);
     } else if (rawText.includes('cadeau') && flowConfig.replyCadeau) {
