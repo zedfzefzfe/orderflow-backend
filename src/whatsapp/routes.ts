@@ -31,9 +31,10 @@ const router = Router();
 function stripForMatch(s: string): string {
   return (s || '')
     .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
+    .replace(/[̀-ͯ]/g, '')                              // strip combining accents
+    .replace(/[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27FF}]|[︀-️]/gu, '') // strip emojis
+    .replace(/[^a-z0-9 ]/gi, '')                                  // strip remaining non-alphanumeric
     .toLowerCase()
-    .replace(/[^a-z0-9 ]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -164,7 +165,8 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
       null;
 
     // Encoding-proof match: strip accents/punctuation/case on both sides
-    const textMatch = stripForMatch(incomingText).includes(TRIGGER_NORMALIZED);
+    const normalizedIncoming = stripForMatch(incomingText);
+    const textMatch = normalizedIncoming.includes(TRIGGER_NORMALIZED);
     const isFromAd  = textMatch || !!adReferral;
 
     console.log('[webhook-debug]', JSON.stringify({
@@ -174,6 +176,11 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
       hasAdReferral: !!adReferral,
       isFromAd,
     }));
+    console.log('[webhook-debug-normalized]', {
+      normalized: normalizedIncoming,
+      trigger: TRIGGER_NORMALIZED,
+      match: textMatch,
+    });
 
     const flowConfig = business.whatsappFlowConfig as FlowConfig | null;
     if (!flowConfig?.enabled) return;
