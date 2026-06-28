@@ -26,9 +26,21 @@ const upload = multer({
 const router = Router();
 
 
-// Exact pre-filled message WhatsApp sends when a user clicks a Meta Click-to-WhatsApp ad.
-// The automation flow only triggers on this message — all other messages are ignored.
-const AD_TRIGGER_MESSAGE = 'Montrez-moi vos modèles dispo 💐';
+// Strips accents, punctuation, and case so encoding differences between iOS /
+// Android / WhatsApp versions don't break trigger detection.
+function stripForMatch(s: string): string {
+  return (s || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Normalized form of the Meta Ads pre-filled trigger message.
+// "Montrez-moi vos modèles dispo 💐" → "montrez moi vos modeles dispo"
+const TRIGGER_NORMALIZED = 'montrez moi vos modeles dispo';
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
@@ -127,42 +139,65 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
     const senderPhone = remoteJid.replace('@s.whatsapp.net', '');
 
     const message = (data.message ?? {}) as Record<string, unknown>;
-    const extendedText = (message.extendedTextMessage ?? {}) as Record<string, unknown>;
-    // Preserve original case for the ad-trigger exact match; use lowercase for vous/cadeau
-    const incomingText = (
-      (message.conversation as string) ??
-      (extendedText.text as string) ??
-      ''
-    );
+
+    // Broaden extraction to cover all known Evolution/Baileys payload variants
+    const extendedText    = (message.extendedTextMessage as Record<string, unknown> | undefined) ?? {};
+    const ephemeralInner  = ((message.ephemeralMessage as Record<string, unknown> | undefined)
+                              ?.message as Record<string, unknown> | undefined) ?? {};
+    const imageMsg        = (message.imageMessage as Record<string, unknown> | undefined) ?? {};
+
+    const incomingText: string =
+      (message.conversation as string | undefined) ||
+      (extendedText.text as string | undefined) ||
+      ((ephemeralInner.extendedTextMessage as Record<string, unknown> | undefined)?.text as string | undefined) ||
+      (ephemeralInner.conversation as string | undefined) ||
+      (imageMsg.caption as string | undefined) ||
+      '';
+
     const rawText = incomingText.toLowerCase();
 
-    // Only trigger on the Meta Ads pre-filled message — exact match, with a loose
-    // fallback in case WhatsApp truncates the emoji or encoding differs slightly
-    const isAdTrigger =
-      incomingText.trim() === AD_TRIGGER_MESSAGE.trim() ||
-      incomingText.includes('Montrez-moi vos modèles dispo');
+    // Ad-referral metadata present when WhatsApp routes the message via a Meta ad
+    const contextInfo = (extendedText.contextInfo as Record<string, unknown> | undefined) ?? {};
+    const adReferral =
+      contextInfo.externalAdReply ||
+      (message.contextInfo as Record<string, unknown> | undefined)?.externalAdReply ||
+      null;
+
+    // Encoding-proof match: strip accents/punctuation/case on both sides
+    const textMatch = stripForMatch(incomingText).includes(TRIGGER_NORMALIZED);
+    const isFromAd  = textMatch || !!adReferral;
+
+    console.log('[webhook-debug]', JSON.stringify({
+      phone: senderPhone,
+      incomingText,
+      textMatch,
+      hasAdReferral: !!adReferral,
+      isFromAd,
+    }));
 
     const flowConfig = business.whatsappFlowConfig as FlowConfig | null;
     if (!flowConfig?.enabled) return;
 
-    // Check DB for an existing session — persists across server restarts
-    const existingSession = await prisma.whatsappSession.findUnique({
-      where: { phoneNumber_businessId: { phoneNumber: senderPhone, businessId: business.id } },
-    });
-
-    if (!existingSession && isAdTrigger) {
-      // Create the session IMMEDIATELY so follow-up messages (including the ad message
-      // sent a second time) during the delay window don't trigger a second flow.
-      await prisma.whatsappSession.create({
-        data: { businessId: business.id, phoneNumber: senderPhone },
-      });
+    if (isFromAd) {
+      // Atomic session create — if P2002 (unique violation) a duplicate webhook
+      // already created the session; skip silently to prevent double-sending.
+      try {
+        await prisma.whatsappSession.create({
+          data: { businessId: business.id, phoneNumber: senderPhone },
+        });
+      } catch (err) {
+        if ((err as Record<string, unknown>).code === 'P2002') {
+          console.log(`[webhook] Duplicate webhook for ${senderPhone} — skipping (session already exists)`);
+          return;
+        }
+        throw err;
+      }
 
       // 60–75 s jitter so the reply never feels like a cron job
       const delay = 60_000 + Math.floor(Math.random() * 15_000);
       console.log(`[webhook] Ad trigger from ${senderPhone} — welcome flow scheduled in ${Math.round(delay / 1000)}s`);
 
-      // Capture values needed by the closure (avoids holding the full business object)
-      const businessId = business.id;
+      const businessId  = business.id;
       const flowSnapshot = { ...flowConfig } as FlowConfig;
 
       // Fire-and-forget: processWebhook returns immediately; flow runs after delay
@@ -171,12 +206,18 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
           .catch(err => console.error(`[webhook] Delayed welcome flow error for ${senderPhone}:`, err));
       }, delay);
 
-    } else if (existingSession && rawText.includes('vous') && flowConfig.replyVous) {
-      await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyVous);
-    } else if (existingSession && rawText.includes('cadeau') && flowConfig.replyCadeau) {
-      await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyCadeau);
     } else {
-      console.log(`[webhook] ${senderPhone} — ignored (isAdTrigger=${isAdTrigger}, hasSession=${!!existingSession})`);
+      // Check for vous/cadeau replies — only for contacts who came in via the ad
+      const existingSession = await prisma.whatsappSession.findUnique({
+        where: { phoneNumber_businessId: { phoneNumber: senderPhone, businessId: business.id } },
+      });
+      if (existingSession && rawText.includes('vous') && flowConfig.replyVous) {
+        await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyVous);
+      } else if (existingSession && rawText.includes('cadeau') && flowConfig.replyCadeau) {
+        await evolutionProvider.sendText(business.id, senderPhone, flowConfig.replyCadeau);
+      } else {
+        console.log(`[webhook] ${senderPhone} — ignored (hasSession=${!!existingSession})`);
+      }
     }
   }
 }
