@@ -27,10 +27,11 @@ const router = Router();
 
 
 // Normalize EVOLUTION_API_URL: Railway stores it without protocol
-function evoBaseUrl(): string {
-  const raw = process.env.EVOLUTION_API_URL ?? '';
-  return raw.startsWith('http') ? raw : `https://${raw}`;
-}
+const _EVO_RAW = (process.env.EVOLUTION_API_URL || '').trim();
+const EVOLUTION_BASE_URL = _EVO_RAW.startsWith('http://') || _EVO_RAW.startsWith('https://')
+  ? _EVO_RAW.replace(/\/$/, '')
+  : `https://${_EVO_RAW.replace(/\/$/, '')}`;
+console.log('[whatsapp/routes] evolution base URL:', EVOLUTION_BASE_URL);
 
 // Strips accents, punctuation, and case so encoding differences between iOS /
 // Android / WhatsApp versions don't break trigger detection.
@@ -65,7 +66,7 @@ interface FlowConfig {
 // the Evolution instance doesn't support this endpoint or the call fails.
 async function sendTypingPresence(instanceName: string, phoneNumber: string, durationMs: number): Promise<void> {
   try {
-    await fetch(`${evoBaseUrl()}/chat/sendPresence/${instanceName}`, {
+    await fetch(`${EVOLUTION_BASE_URL}/chat/sendPresence/${instanceName}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! },
       body: JSON.stringify({ number: phoneNumber, options: { presence: 'composing', delay: durationMs } }),
@@ -377,7 +378,7 @@ router.delete('/disconnect', requireAuth, async (req: AuthenticatedRequest, res:
   try {
     const businessId = req.user!.businessId;
     const name = instanceNameFor(businessId);
-    const evoBase = evoBaseUrl();
+    const evoBase = EVOLUTION_BASE_URL;
     const headers = { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! };
 
     // Logout session — ignore errors (instance may already be logged out or not exist)
@@ -422,7 +423,7 @@ router.post('/send-qr', requireAuth, async (req: AuthenticatedRequest, res: Resp
     const base64 = qrBase64.replace(/^data:image\/[a-z]+;base64,/, '');
 
     const name = instanceNameFor(req.user!.businessId);
-    const evoBase = evoBaseUrl();
+    const evoBase = EVOLUTION_BASE_URL;
     const headers = { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! };
 
     const evoRes = await fetch(`${evoBase}/message/sendMedia/${name}`, {

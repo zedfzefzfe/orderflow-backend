@@ -73,10 +73,12 @@ async function configureEvolutionWebhook() {
 
   if (!EVOLUTION_API_URL || !EVOLUTION_API_KEY) return;
 
-  // Normalize: Railway stores the URL without protocol
-  const evoBase = EVOLUTION_API_URL.startsWith('http')
-    ? EVOLUTION_API_URL
-    : `https://${EVOLUTION_API_URL}`;
+  const _raw = EVOLUTION_API_URL.trim();
+  const evoBase = _raw.startsWith('http://') || _raw.startsWith('https://')
+    ? _raw.replace(/\/$/, '')
+    : `https://${_raw.replace(/\/$/, '')}`;
+
+  console.log('[evolution] configureEvolutionWebhook base URL:', evoBase);
 
   try {
     const res = await fetch(`${evoBase}/webhook/set/${INSTANCE}`, {

@@ -2,21 +2,22 @@
 // All calls to the Evolution v2 REST API live here. Swap this file to change
 // the underlying WhatsApp provider without touching routes or webhook logic.
 
-const _RAW_EVOLUTION_URL = process.env.EVOLUTION_API_URL ?? '';
-// Normalize: stored without protocol on Railway ("host.railway.app" → "https://host.railway.app")
-const EVOLUTION_URL = _RAW_EVOLUTION_URL.startsWith('http')
-  ? _RAW_EVOLUTION_URL
-  : `https://${_RAW_EVOLUTION_URL}`;
+const RAW = (process.env.EVOLUTION_API_URL || '').trim();
+const EVOLUTION_BASE_URL = RAW.startsWith('http://') || RAW.startsWith('https://')
+  ? RAW.replace(/\/$/, '')
+  : `https://${RAW.replace(/\/$/, '')}`;
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY;
 
-if (!_RAW_EVOLUTION_URL || !EVOLUTION_KEY) {
+if (!RAW || !EVOLUTION_KEY) {
   const missing = [
-    !EVOLUTION_URL && 'EVOLUTION_API_URL',
+    !RAW && 'EVOLUTION_API_URL',
     !EVOLUTION_KEY && 'EVOLUTION_API_KEY',
   ].filter(Boolean).join(', ');
   console.error(`[FATAL] Missing required environment variables: ${missing}`);
   process.exit(1);
 }
+
+console.log('[evolution] base URL:', EVOLUTION_BASE_URL);
 
 const BACKEND_URL = process.env.BACKEND_URL;
 if (!BACKEND_URL) {
@@ -45,7 +46,7 @@ export function instanceNameFor(businessId: string): string {
 }
 
 async function evoFetch(path: string, options: RequestInit = {}): Promise<unknown> {
-  const url = `${EVOLUTION_URL}${path}`;
+  const url = `${EVOLUTION_BASE_URL}${path}`;
   const res = await fetch(url, {
     ...options,
     headers: {
