@@ -63,8 +63,43 @@ app.use((err: any, _req: express.Request, res: express.Response, _next: express.
   res.status(500).json({ error: 'Internal server error' });
 });
 
+async function configureEvolutionWebhook() {
+  const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL;
+  const EVOLUTION_API_KEY = process.env.AUTHENTICATION_API_KEY;
+  const INSTANCE = 'merchant_8ececf89-a697-47cc-b7c9-124951348c80';
+  const BACKEND_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : 'https://orderflow-backend-production-9d9d.up.railway.app';
+
+  if (!EVOLUTION_API_URL || !EVOLUTION_API_KEY) return;
+
+  try {
+    const res = await fetch(`https://${EVOLUTION_API_URL}/webhook/set/${INSTANCE}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', apikey: EVOLUTION_API_KEY },
+      body: JSON.stringify({
+        webhook: {
+          url: `${BACKEND_URL}/api/whatsapp/webhook/${INSTANCE}`,
+          enabled: true,
+          webhookByEvents: false,
+          webhookBase64: false,
+          events: ['MESSAGES_UPSERT'],
+          retryOnError: true,
+          maxRetries: 5,
+          retryInterval: 30,
+        },
+      }),
+    });
+    const data = await res.json();
+    console.log('[evolution] webhook retry configured:', JSON.stringify(data));
+  } catch (err) {
+    console.error('[evolution] failed to configure webhook retry:', err);
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`OrderFlow API running on port ${PORT}`);
+  configureEvolutionWebhook();
 });
 
 // Every Monday at 8:00 AM Morocco time
