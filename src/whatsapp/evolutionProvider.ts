@@ -2,10 +2,14 @@
 // All calls to the Evolution v2 REST API live here. Swap this file to change
 // the underlying WhatsApp provider without touching routes or webhook logic.
 
-const EVOLUTION_URL = process.env.EVOLUTION_API_URL;
+const _RAW_EVOLUTION_URL = process.env.EVOLUTION_API_URL ?? '';
+// Normalize: stored without protocol on Railway ("host.railway.app" → "https://host.railway.app")
+const EVOLUTION_URL = _RAW_EVOLUTION_URL.startsWith('http')
+  ? _RAW_EVOLUTION_URL
+  : `https://${_RAW_EVOLUTION_URL}`;
 const EVOLUTION_KEY = process.env.EVOLUTION_API_KEY;
 
-if (!EVOLUTION_URL || !EVOLUTION_KEY) {
+if (!_RAW_EVOLUTION_URL || !EVOLUTION_KEY) {
   const missing = [
     !EVOLUTION_URL && 'EVOLUTION_API_URL',
     !EVOLUTION_KEY && 'EVOLUTION_API_KEY',

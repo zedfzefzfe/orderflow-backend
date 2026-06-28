@@ -26,6 +26,12 @@ const upload = multer({
 const router = Router();
 
 
+// Normalize EVOLUTION_API_URL: Railway stores it without protocol
+function evoBaseUrl(): string {
+  const raw = process.env.EVOLUTION_API_URL ?? '';
+  return raw.startsWith('http') ? raw : `https://${raw}`;
+}
+
 // Strips accents, punctuation, and case so encoding differences between iOS /
 // Android / WhatsApp versions don't break trigger detection.
 function stripForMatch(s: string): string {
@@ -59,7 +65,7 @@ interface FlowConfig {
 // the Evolution instance doesn't support this endpoint or the call fails.
 async function sendTypingPresence(instanceName: string, phoneNumber: string, durationMs: number): Promise<void> {
   try {
-    await fetch(`${process.env.EVOLUTION_API_URL}/chat/sendPresence/${instanceName}`, {
+    await fetch(`${evoBaseUrl()}/chat/sendPresence/${instanceName}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! },
       body: JSON.stringify({ number: phoneNumber, options: { presence: 'composing', delay: durationMs } }),
@@ -371,7 +377,7 @@ router.delete('/disconnect', requireAuth, async (req: AuthenticatedRequest, res:
   try {
     const businessId = req.user!.businessId;
     const name = instanceNameFor(businessId);
-    const evoBase = process.env.EVOLUTION_API_URL!;
+    const evoBase = evoBaseUrl();
     const headers = { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! };
 
     // Logout session — ignore errors (instance may already be logged out or not exist)
@@ -416,7 +422,7 @@ router.post('/send-qr', requireAuth, async (req: AuthenticatedRequest, res: Resp
     const base64 = qrBase64.replace(/^data:image\/[a-z]+;base64,/, '');
 
     const name = instanceNameFor(req.user!.businessId);
-    const evoBase = process.env.EVOLUTION_API_URL!;
+    const evoBase = evoBaseUrl();
     const headers = { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! };
 
     const evoRes = await fetch(`${evoBase}/message/sendMedia/${name}`, {
