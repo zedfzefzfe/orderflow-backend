@@ -41,7 +41,7 @@ function stripForMatch(s: string): string {
 
 // Normalized form of the Meta Ads pre-filled trigger message.
 // "Montrez-moi vos modèles dispo 💐" → "montrez moi vos modeles dispo"
-const TRIGGER_NORMALIZED = 'montrez moi vos modeles dispo';
+const TRIGGER_NORMALIZED = 'montrezmoi vos modeles dispo';
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
