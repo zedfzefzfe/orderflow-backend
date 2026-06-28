@@ -111,6 +111,19 @@ app.listen(PORT, () => {
   configureEvolutionWebhook();
 });
 
+const SELF_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+  : 'https://orderflow-backend-production-9d9d.up.railway.app';
+
+setInterval(async () => {
+  try {
+    await fetch(`${SELF_URL}/health`);
+    console.log('[keep-alive] self-ping ok at', new Date().toISOString());
+  } catch (err) {
+    console.error('[keep-alive] self-ping failed:', err);
+  }
+}, 4 * 60 * 1000);
+
 // Every Monday at 8:00 AM Morocco time
 cron.schedule('0 7 * * 1', async () => {
   console.log('[CRON] Running weekly reports...');
