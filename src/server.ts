@@ -1,3 +1,5 @@
+console.log('[BOOT] server.ts loaded — build version:', new Date().toISOString());
+
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
