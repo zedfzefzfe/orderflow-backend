@@ -109,6 +109,16 @@ async function sendWelcomeFlow(
 }
 
 async function processWebhook(instanceName: string, payload: Record<string, unknown>): Promise<void> {
+  // Log every incoming webhook so we can see format + event name in Railway
+  console.log('[webhook-raw]', JSON.stringify({
+    instanceName,
+    event: payload.event,
+    dataIsArray: Array.isArray(payload.data),
+    dataKeys: Array.isArray(payload.data)
+      ? `array[${(payload.data as unknown[]).length}]`
+      : Object.keys((payload.data ?? {}) as object).join(','),
+  }));
+
   const business = await prisma.business.findFirst({
     where: { whatsappInstanceName: instanceName },
   });
@@ -119,7 +129,11 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
   }
 
   const event = (payload.event as string) ?? '';
-  const data = (payload.data ?? {}) as Record<string, unknown>;
+
+  // Evolution v2 sends data as either a plain object OR an array of message objects.
+  // Normalise to a single object so all downstream code is format-agnostic.
+  const rawData = payload.data;
+  const data = (Array.isArray(rawData) ? (rawData[0] ?? {}) : (rawData ?? {})) as Record<string, unknown>;
 
   // ── CONNECTION_UPDATE ─────────────────────────────────────────────────────
   if (event === 'connection.update' || event === 'CONNECTION_UPDATE') {
@@ -209,13 +223,15 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
 
       // 60–75 s jitter so the reply never feels like a cron job
       const delay = 60_000 + Math.floor(Math.random() * 15_000);
-      console.log(`[webhook] Ad trigger from ${senderPhone} — welcome flow scheduled in ${Math.round(delay / 1000)}s`);
 
       const businessId  = business.id;
       const flowSnapshot = { ...flowConfig } as FlowConfig;
 
+      console.log('[webhook] scheduling welcome flow in', delay, 'ms for', senderPhone);
+
       // Fire-and-forget: processWebhook returns immediately; flow runs after delay
       setTimeout(() => {
+        console.log('[webhook] NOW sending welcome flow to', senderPhone);
         sendWelcomeFlow(businessId, instanceName, senderPhone, flowSnapshot)
           .catch(err => console.error(`[webhook] Delayed welcome flow error for ${senderPhone}:`, err));
       }, delay);
@@ -244,6 +260,9 @@ router.post('/webhook/:instanceName', async (req: Request, res: Response) => {
 
   const { instanceName } = req.params;
   const payload = req.body as Record<string, unknown>;
+
+  // Log the full raw payload so we can debug Evolution format mismatches in Railway
+  console.log('[webhook-incoming]', instanceName, JSON.stringify(payload).slice(0, 800));
 
   try {
     await processWebhook(instanceName, payload);
