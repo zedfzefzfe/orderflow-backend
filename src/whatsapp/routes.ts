@@ -4,6 +4,7 @@ import { requireAuth, AuthenticatedRequest } from '../middleware/auth.js';
 import { prisma } from '../lib/prisma.js';
 import { supabaseAdmin } from '../lib/supabase.js';
 import { evolutionProvider, instanceNameFor } from './evolutionProvider.js';
+import { stripForMatch } from '../utils/triggerMatch.js';
 
 // ── Image upload config ───────────────────────────────────────────────────────
 
@@ -33,22 +34,19 @@ const EVOLUTION_BASE_URL = _EVO_RAW.startsWith('http://') || _EVO_RAW.startsWith
   : `https://${_EVO_RAW.replace(/\/$/, '')}`;
 console.log('[whatsapp/routes] evolution base URL:', EVOLUTION_BASE_URL);
 
-// Strips accents, punctuation, and case so encoding differences between iOS /
-// Android / WhatsApp versions don't break trigger detection.
-function stripForMatch(s: string): string {
-  return (s || '')
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')                              // strip combining accents
-    .replace(/[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27FF}]|[︀-️]/gu, '') // strip emojis
-    .replace(/[^a-z0-9 ]/gi, '')                                  // strip remaining non-alphanumeric
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 // Normalized form of the Meta Ads pre-filled trigger message.
+// Legacy single-trigger flow only — businesses with Automation rows never reach it.
 // "Montrez-moi vos modèles dispo 💐" → "montrez moi vos modeles dispo"
 const TRIGGER_NORMALIZED = 'montrezmoi vos modeles dispo';
+
+// Sent on first contact when no automation trigger matched, so a customer who
+// wrote something off-script still gets an answer instead of silence.
+const FALLBACK_MESSAGE =
+  'Bonjour et bienvenue ✨ Vous êtes intéressé par quel service ? Dites-moi et je vous envoie tout 😊';
+
+// Reply delay: 60–75 s of jitter so the reply never feels like a cron job.
+const REPLY_DELAY_MS = 60_000;
+const REPLY_JITTER_MS = 15_000;
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
@@ -106,6 +104,116 @@ async function sendWelcomeFlow(
     await sendTypingPresence(instanceName, senderPhone, 2000);
     await evolutionProvider.sendText(businessId, senderPhone, flowConfig.question);
   }
+}
+
+// ── Automation-driven first-contact flow ──────────────────────────────────────
+
+// Structural shape of the fields we read off an Automation row — avoids coupling
+// this module to the generated Prisma type.
+interface AutomationRule {
+  id: string;
+  name: string;
+  triggerMessage: string;
+  welcomeMessage: string;
+  photoUrls: string[];
+}
+
+// Returns the first automation whose normalized trigger is contained in the
+// normalized incoming text. Caller passes them already sorted by priority DESC.
+function matchAutomation<T extends AutomationRule>(
+  automations: T[],
+  incomingText: string,
+): T | null {
+  const incoming = stripForMatch(incomingText);
+  if (!incoming) return null;
+
+  for (const automation of automations) {
+    const trigger = stripForMatch(automation.triggerMessage);
+    // A blank trigger normalizes to '' and would match every message —
+    // skip it rather than let it hijack the whole funnel.
+    if (!trigger) continue;
+    if (incoming.includes(trigger)) return automation;
+  }
+  return null;
+}
+
+// Photos one by one, then the script.
+async function sendAutomationFlow(
+  businessId: string,
+  instanceName: string,
+  senderPhone: string,
+  automation: AutomationRule,
+): Promise<void> {
+  const photoUrls = automation.photoUrls ?? [];
+
+  for (let i = 0; i < photoUrls.length; i++) {
+    await sendTypingPresence(instanceName, senderPhone, 2000);
+    await evolutionProvider.sendImage(businessId, senderPhone, photoUrls[i]);
+    if (i < photoUrls.length - 1) {
+      // Brief gap so WhatsApp doesn't bundle sequential images
+      await new Promise<void>(r => setTimeout(r, 500));
+    }
+  }
+
+  if (automation.welcomeMessage) {
+    await sendTypingPresence(instanceName, senderPhone, 3000);
+    await evolutionProvider.sendText(businessId, senderPhone, automation.welcomeMessage);
+  }
+}
+
+// Runs only on the very first message of a conversation: match a trigger and
+// fire its flow, or send the neutral fallback. Every later message is ignored
+// so the merchant can take over the conversation by hand.
+async function handleAutomationFirstContact(
+  business: { id: string; whatsappConnected: boolean },
+  instanceName: string,
+  senderPhone: string,
+  incomingText: string,
+  automations: AutomationRule[],
+): Promise<void> {
+  // Never push into a disconnected instance. Nothing is consumed here, so the
+  // flow still fires on the customer's next message once WhatsApp is back.
+  if (!business.whatsappConnected) {
+    console.log(`[automation] ${instanceName} not connected — skipping ${senderPhone}`);
+    return;
+  }
+
+  // Atomic first-contact claim. P2002 means a session already exists: either a
+  // follow-up message (human takes over) or a duplicate webhook delivery.
+  try {
+    await prisma.whatsappSession.create({
+      data: { businessId: business.id, phoneNumber: senderPhone },
+    });
+  } catch (err) {
+    if ((err as Record<string, unknown>).code === 'P2002') {
+      console.log(`[automation] ${senderPhone} — not a first message, staying silent`);
+      return;
+    }
+    throw err;
+  }
+
+  const matched = matchAutomation(automations, incomingText);
+
+  console.log('[automation-match]', JSON.stringify({
+    phone: senderPhone,
+    normalized: stripForMatch(incomingText),
+    matched: matched ? { id: matched.id, name: matched.name } : null,
+    candidates: automations.length,
+  }));
+
+  const delay = REPLY_DELAY_MS + Math.floor(Math.random() * REPLY_JITTER_MS);
+  const businessId = business.id;
+
+  console.log(`[automation] scheduling reply in ${delay}ms for ${senderPhone}`);
+
+  // Fire-and-forget: processWebhook returns immediately; the flow runs after the delay
+  setTimeout(() => {
+    const run = matched
+      ? sendAutomationFlow(businessId, instanceName, senderPhone, matched)
+      : evolutionProvider.sendText(businessId, senderPhone, FALLBACK_MESSAGE);
+
+    run.catch(err => console.error(`[automation] send error for ${senderPhone}:`, err));
+  }, delay);
 }
 
 async function processWebhook(instanceName: string, payload: Record<string, unknown>): Promise<void> {
@@ -177,6 +285,31 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
       '';
 
     const rawText = incomingText.toLowerCase();
+
+    // ── Automation-driven detection ───────────────────────────────────────
+    // Configured from the dashboard, one row per Meta ad funnel. Highest
+    // priority is tested first; the first trigger contained in the incoming
+    // text wins and no other automation is tried.
+    const automations = await prisma.automation.findMany({
+      where: { businessId: business.id, isActive: true },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+    });
+
+    if (automations.length > 0) {
+      await handleAutomationFirstContact(
+        business,
+        instanceName,
+        senderPhone,
+        incomingText,
+        automations,
+      );
+      return;
+    }
+
+    // ── Legacy single-trigger flow (fallback) ─────────────────────────────
+    // Reached only while a business has zero active automations — this is what
+    // keeps Zethnika's live funnel (photos → question → vous/cadeau branches)
+    // running unchanged, since Automation cannot express its follow-up replies.
 
     // Ad-referral metadata present when WhatsApp routes the message via a Meta ad
     const contextInfo = (extendedText.contextInfo as Record<string, unknown> | undefined) ?? {};

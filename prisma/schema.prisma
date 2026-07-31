@@ -101,6 +101,7 @@ model Business {
   conversationMessages ConversationMessage[]
   customers            Customer[]
   whatsappSessions     WhatsappSession[]
+  automations          Automation[]
 
   @@map("businesses")
 }
@@ -259,6 +260,27 @@ model WhatsappSession {
 
   @@unique([phoneNumber, businessId])
   @@map("whatsapp_sessions")
+}
+
+// One configurable Meta Ads funnel: a pre-filled trigger message the customer
+// sends, the photos we reply with, and the welcome script that follows them.
+// A business can have several — matched in priority order on first contact.
+model Automation {
+  id             String   @id @default(cuid())
+  businessId     String   @map("business_id")
+  name           String
+  triggerMessage String   @map("trigger_message") @db.Text
+  welcomeMessage String   @map("welcome_message") @db.Text
+  photoUrls      String[] @map("photo_urls")
+  isActive       Boolean  @default(true) @map("is_active")
+  priority       Int      @default(0)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  business Business @relation(fields: [businessId], references: [id])
+
+  @@index([businessId])
+  @@map("automations")
 }
 
 model PendingOrder {
