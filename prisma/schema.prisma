@@ -272,6 +272,8 @@ model Automation {
   triggerMessage String   @map("trigger_message") @db.Text
   welcomeMessage String   @map("welcome_message") @db.Text
   photoUrls      String[] @map("photo_urls")
+  videoUrl       String?  @map("video_url")
+  documentUrls   String[] @default([]) @map("document_urls")
   isActive       Boolean  @default(true) @map("is_active")
   priority       Int      @default(0)
   createdAt      DateTime @default(now()) @map("created_at")

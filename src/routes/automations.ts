@@ -26,6 +26,44 @@ const upload = multer({
   },
 });
 
+// ── Document upload config ────────────────────────────────────────────────────
+
+const DOC_MIME = 'application/pdf';
+const MAX_DOC_BYTES = 16 * 1024 * 1024; // 16 MB
+const MAX_DOCS = 2;
+const DOC_BUCKET = 'whatsapp-documents';
+
+const uploadDocs = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_DOC_BYTES, files: MAX_DOCS },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === DOC_MIME) {
+      cb(null, true);
+    } else {
+      cb(new Error('TYPE_ERROR'));
+    }
+  },
+});
+
+// ── Video upload config ───────────────────────────────────────────────────────
+
+const VIDEO_MIME = 'video/mp4';
+// WhatsApp stops playing video inline past ~16 MB, so refuse it up front
+const MAX_VIDEO_BYTES = 16 * 1024 * 1024;
+const VIDEO_BUCKET = 'whatsapp-videos';
+
+const uploadVideo = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_VIDEO_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === VIDEO_MIME) {
+      cb(null, true);
+    } else {
+      cb(new Error('TYPE_ERROR'));
+    }
+  },
+});
+
 // ── Payload validation ────────────────────────────────────────────────────────
 
 interface AutomationPayload {
@@ -33,6 +71,8 @@ interface AutomationPayload {
   triggerMessage: string;
   welcomeMessage: string;
   photoUrls: string[];
+  videoUrl: string | null;
+  documentUrls: string[];
   isActive: boolean;
   priority: number;
 }
@@ -84,6 +124,34 @@ function validatePayload(
     data.photoUrls = [];
   }
 
+  // Sending null (or '') is how the dashboard clears the video on save
+  if (body.videoUrl !== undefined) {
+    if (body.videoUrl === null) {
+      data.videoUrl = null;
+    } else if (typeof body.videoUrl === 'string') {
+      data.videoUrl = body.videoUrl.trim() || null;
+    } else {
+      return { error: 'videoUrl doit être une URL ou null' };
+    }
+  } else if (!partial) {
+    data.videoUrl = null;
+  }
+
+  // A shorter array than the stored one is how a document gets removed
+  if (body.documentUrls !== undefined) {
+    if (!Array.isArray(body.documentUrls)) {
+      return { error: 'documentUrls doit être un tableau d\'URLs' };
+    }
+    if (body.documentUrls.length > MAX_DOCS) {
+      return { error: `documentUrls ne peut pas dépasser ${MAX_DOCS} fichiers` };
+    }
+    data.documentUrls = body.documentUrls
+      .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+      .map(u => u.trim());
+  } else if (!partial) {
+    data.documentUrls = [];
+  }
+
   if (body.isActive !== undefined) {
     data.isActive = Boolean(body.isActive);
   }
@@ -131,6 +199,8 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
         triggerMessage: result.data.triggerMessage!,
         welcomeMessage: result.data.welcomeMessage!,
         photoUrls: result.data.photoUrls ?? [],
+        videoUrl: result.data.videoUrl ?? null,
+        documentUrls: result.data.documentUrls ?? [],
         isActive: result.data.isActive ?? true,
         priority: result.data.priority ?? 0,
       },
@@ -284,6 +354,191 @@ router.post(
       res.status(201).json({ urls, automation });
     } catch (err) {
       console.error('[automations] photos upload error:', err);
+      res.status(500).json({ error: 'Erreur interne lors du téléversement' });
+    }
+  },
+);
+
+// ── Document upload ───────────────────────────────────────────────────────────
+
+// POST /api/automations/:id/documents — multipart field name: "documents"
+router.post(
+  '/:id/documents',
+  requireAuth,
+  (req: AuthenticatedRequest, res: Response, next) => {
+    uploadDocs.array('documents', MAX_DOCS)(req, res, (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          res.status(400).json({ error: 'Fichier trop volumineux (max 16 Mo)' });
+          return;
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+          res.status(400).json({ error: `Trop de fichiers (max ${MAX_DOCS})` });
+          return;
+        }
+        if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+          res.status(400).json({ error: 'Le champ du formulaire doit s\'appeler "documents"' });
+          return;
+        }
+      }
+      if (err instanceof Error && err.message === 'TYPE_ERROR') {
+        res.status(400).json({ error: 'Type de fichier non accepté (PDF uniquement)' });
+        return;
+      }
+      if (err) {
+        res.status(400).json({ error: 'Erreur lors de la réception des fichiers' });
+        return;
+      }
+      next();
+    });
+  },
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { businessId } = req.user!;
+
+      const existing = await prisma.automation.findFirst({
+        where: { id, businessId },
+      });
+      if (!existing) {
+        res.status(404).json({ error: 'Automation introuvable' });
+        return;
+      }
+
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
+        res.status(400).json({ error: 'Aucun fichier reçu' });
+        return;
+      }
+
+      // multer caps a single request; this caps the total already stored
+      if (existing.documentUrls.length + files.length > MAX_DOCS) {
+        const left = MAX_DOCS - existing.documentUrls.length;
+        res.status(400).json({
+          error: left > 0
+            ? `${MAX_DOCS} PDF maximum — il reste ${left} emplacement${left > 1 ? 's' : ''}`
+            : `${MAX_DOCS} PDF maximum — supprimez-en un d'abord`,
+        });
+        return;
+      }
+
+      await supabaseAdmin.storage
+        .createBucket(DOC_BUCKET, { public: true, fileSizeLimit: MAX_DOC_BYTES })
+        .catch(() => {});
+
+      const urls: string[] = [];
+      for (const file of files) {
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${businessId}/${id}/${Date.now()}-${safeName}`;
+
+        const { error: uploadError } = await supabaseAdmin.storage
+          .from(DOC_BUCKET)
+          .upload(path, file.buffer, { contentType: file.mimetype, upsert: false });
+
+        if (uploadError) {
+          console.error('[automations] Supabase document upload error:', uploadError);
+          res.status(500).json({ error: 'Échec du téléversement vers Supabase Storage' });
+          return;
+        }
+
+        const { data: { publicUrl } } = supabaseAdmin.storage.from(DOC_BUCKET).getPublicUrl(path);
+        urls.push(publicUrl);
+      }
+
+      const automation = await prisma.automation.update({
+        where: { id },
+        data: { documentUrls: { push: urls } },
+      });
+
+      res.status(201).json({ urls: automation.documentUrls, automation });
+    } catch (err) {
+      console.error('[automations] documents upload error:', err);
+      res.status(500).json({ error: 'Erreur interne lors du téléversement' });
+    }
+  },
+);
+
+// ── Video upload ──────────────────────────────────────────────────────────────
+
+// POST /api/automations/:id/video — multipart field name: "video" (single)
+router.post(
+  '/:id/video',
+  requireAuth,
+  (req: AuthenticatedRequest, res: Response, next) => {
+    uploadVideo.single('video')(req, res, (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          res.status(400).json({ error: 'Vidéo trop volumineuse (max 16 Mo — limite WhatsApp)' });
+          return;
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+          res.status(400).json({ error: 'Une seule vidéo par automation' });
+          return;
+        }
+        if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+          res.status(400).json({ error: 'Le champ du formulaire doit s\'appeler "video"' });
+          return;
+        }
+      }
+      if (err instanceof Error && err.message === 'TYPE_ERROR') {
+        res.status(400).json({ error: 'Type de fichier non accepté (MP4 uniquement)' });
+        return;
+      }
+      if (err) {
+        res.status(400).json({ error: 'Erreur lors de la réception du fichier' });
+        return;
+      }
+      next();
+    });
+  },
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { businessId } = req.user!;
+
+      const existing = await prisma.automation.findFirst({
+        where: { id, businessId },
+      });
+      if (!existing) {
+        res.status(404).json({ error: 'Automation introuvable' });
+        return;
+      }
+
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Aucun fichier reçu' });
+        return;
+      }
+
+      await supabaseAdmin.storage
+        .createBucket(VIDEO_BUCKET, { public: true, fileSizeLimit: MAX_VIDEO_BYTES })
+        .catch(() => {});
+
+      const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = `${businessId}/${id}/${Date.now()}-${safeName}`;
+
+      const { error: uploadError } = await supabaseAdmin.storage
+        .from(VIDEO_BUCKET)
+        .upload(path, file.buffer, { contentType: file.mimetype, upsert: false });
+
+      if (uploadError) {
+        console.error('[automations] Supabase video upload error:', uploadError);
+        res.status(500).json({ error: 'Échec du téléversement vers Supabase Storage' });
+        return;
+      }
+
+      const { data: { publicUrl } } = supabaseAdmin.storage.from(VIDEO_BUCKET).getPublicUrl(path);
+
+      // One video per automation: the new upload replaces the previous URL.
+      // The old file stays in Storage, same as photos removed from an automation.
+      const automation = await prisma.automation.update({
+        where: { id },
+        data: { videoUrl: publicUrl },
+      });
+
+      res.status(201).json({ url: automation.videoUrl, automation });
+    } catch (err) {
+      console.error('[automations] video upload error:', err);
       res.status(500).json({ error: 'Erreur interne lors du téléversement' });
     }
   },

@@ -33,6 +33,8 @@ export interface WhatsAppProvider {
   getStatus(businessId: string): Promise<{ connected: boolean }>;
   sendText(businessId: string, to: string, text: string): Promise<void>;
   sendImage(businessId: string, to: string, imageUrl: string, caption?: string): Promise<void>;
+  sendVideo(businessId: string, to: string, videoUrl: string, caption?: string): Promise<void>;
+  sendDocument(businessId: string, to: string, documentUrl: string, fileName: string): Promise<void>;
   /** Register or update the Evolution webhook for an already-known instanceName. */
   setWebhook(instanceName: string, webhookUrl: string): Promise<void>;
   /** Try multiple paths to register the webhook, logging which one succeeds. */
@@ -203,6 +205,36 @@ export const evolutionProvider: WhatsAppProvider = {
         mimetype: 'image/jpeg',
         media: imageUrl,
         caption: caption ?? '',
+      }),
+    });
+  },
+
+  async sendVideo(businessId, to, videoUrl, caption) {
+    const name = instanceNameFor(businessId);
+    await evoFetch(`/message/sendMedia/${name}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        number: to,
+        mediatype: 'video',
+        mimetype: 'video/mp4',
+        media: videoUrl,
+        caption: caption ?? '',
+      }),
+    });
+  },
+
+  // fileName is what WhatsApp shows under the document tile — without it the
+  // customer sees a meaningless generated name
+  async sendDocument(businessId, to, documentUrl, fileName) {
+    const name = instanceNameFor(businessId);
+    await evoFetch(`/message/sendMedia/${name}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        number: to,
+        mediatype: 'document',
+        mimetype: 'application/pdf',
+        media: documentUrl,
+        fileName,
       }),
     });
   },

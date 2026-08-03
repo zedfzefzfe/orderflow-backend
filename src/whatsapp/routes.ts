@@ -116,6 +116,22 @@ interface AutomationRule {
   triggerMessage: string;
   welcomeMessage: string;
   photoUrls: string[];
+  videoUrl?: string | null;
+  documentUrls?: string[];
+}
+
+/** Storage paths are "<timestamp>-<original name>" — recover the readable part
+ *  so WhatsApp shows a real file name under the document tile. */
+function documentNameFromUrl(url: string): string {
+  const last = url.split('?')[0].split('/').pop() ?? '';
+  let name = '';
+  try {
+    name = decodeURIComponent(last).replace(/^\d+-/, '');
+  } catch {
+    name = last.replace(/^\d+-/, '');
+  }
+  if (!name) return 'document.pdf';
+  return name.toLowerCase().endsWith('.pdf') ? name : `${name}.pdf`;
 }
 
 // Returns the first automation whose normalized trigger is contained in the
@@ -137,7 +153,7 @@ function matchAutomation<T extends AutomationRule>(
   return null;
 }
 
-// Photos one by one, then the script.
+// Photos, then the video, then the PDFs, then the script.
 async function sendAutomationFlow(
   businessId: string,
   instanceName: string,
@@ -145,14 +161,35 @@ async function sendAutomationFlow(
   automation: AutomationRule,
 ): Promise<void> {
   const photoUrls = automation.photoUrls ?? [];
+  const videoUrl = automation.videoUrl ?? null;
+  const documentUrls = automation.documentUrls ?? [];
+
+  // Brief gap so WhatsApp doesn't bundle sequential media
+  const gap = () => new Promise<void>(r => setTimeout(r, 500));
 
   for (let i = 0; i < photoUrls.length; i++) {
     await sendTypingPresence(instanceName, senderPhone, 2000);
     await evolutionProvider.sendImage(businessId, senderPhone, photoUrls[i]);
-    if (i < photoUrls.length - 1) {
-      // Brief gap so WhatsApp doesn't bundle sequential images
-      await new Promise<void>(r => setTimeout(r, 500));
+    if (i < photoUrls.length - 1 || videoUrl || documentUrls.length > 0) {
+      await gap();
     }
+  }
+
+  if (videoUrl) {
+    await sendTypingPresence(instanceName, senderPhone, 2000);
+    await evolutionProvider.sendVideo(businessId, senderPhone, videoUrl);
+    if (documentUrls.length > 0) await gap();
+  }
+
+  for (let i = 0; i < documentUrls.length; i++) {
+    await sendTypingPresence(instanceName, senderPhone, 2000);
+    await evolutionProvider.sendDocument(
+      businessId,
+      senderPhone,
+      documentUrls[i],
+      documentNameFromUrl(documentUrls[i]),
+    );
+    if (i < documentUrls.length - 1) await gap();
   }
 
   if (automation.welcomeMessage) {
