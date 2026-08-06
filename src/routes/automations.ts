@@ -73,6 +73,8 @@ interface AutomationPayload {
   photoUrls: string[];
   videoUrl: string | null;
   documentUrls: string[];
+  message2: string | null;
+  message3: string | null;
   isActive: boolean;
   priority: number;
 }
@@ -152,6 +154,22 @@ function validatePayload(
     data.documentUrls = [];
   }
 
+  // Optional follow-ups sent after the media. Blank or null clears them, and a
+  // cleared follow-up is simply skipped at send time.
+  for (const field of ['message2', 'message3'] as const) {
+    if (body[field] !== undefined) {
+      if (body[field] === null) {
+        data[field] = null;
+      } else if (typeof body[field] === 'string') {
+        data[field] = (body[field] as string).trim() || null;
+      } else {
+        return { error: `${field} doit être un texte ou null` };
+      }
+    } else if (!partial) {
+      data[field] = null;
+    }
+  }
+
   if (body.isActive !== undefined) {
     data.isActive = Boolean(body.isActive);
   }
@@ -201,6 +219,8 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
         photoUrls: result.data.photoUrls ?? [],
         videoUrl: result.data.videoUrl ?? null,
         documentUrls: result.data.documentUrls ?? [],
+        message2: result.data.message2 ?? null,
+        message3: result.data.message3 ?? null,
         isActive: result.data.isActive ?? true,
         priority: result.data.priority ?? 0,
       },

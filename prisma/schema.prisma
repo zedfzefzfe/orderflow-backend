@@ -274,6 +274,9 @@ model Automation {
   photoUrls      String[] @map("photo_urls")
   videoUrl       String?  @map("video_url")
   documentUrls   String[] @default([]) @map("document_urls")
+  // Optional follow-ups sent after the media, in order. Null/empty = skipped.
+  message2       String?  @map("message_2") @db.Text
+  message3       String?  @map("message_3") @db.Text
   isActive       Boolean  @default(true) @map("is_active")
   priority       Int      @default(0)
   createdAt      DateTime @default(now()) @map("created_at")

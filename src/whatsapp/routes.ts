@@ -48,6 +48,10 @@ const FALLBACK_MESSAGE =
 const REPLY_DELAY_MS = 60_000;
 const REPLY_JITTER_MS = 15_000;
 
+// Pause between the two optional follow-up messages: 1–2 s.
+const FOLLOWUP_GAP_MS = 1_000;
+const FOLLOWUP_JITTER_MS = 1_000;
+
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
 interface FlowConfig {
@@ -118,6 +122,8 @@ interface AutomationRule {
   photoUrls: string[];
   videoUrl?: string | null;
   documentUrls?: string[];
+  message2?: string | null;
+  message3?: string | null;
 }
 
 /** Storage paths are "<timestamp>-<original name>" — recover the readable part
@@ -195,6 +201,28 @@ async function sendAutomationFlow(
   if (automation.welcomeMessage) {
     await sendTypingPresence(instanceName, senderPhone, 3000);
     await evolutionProvider.sendText(businessId, senderPhone, automation.welcomeMessage);
+  }
+
+  // Optional follow-ups. Every send above is awaited, so reaching this point
+  // already means Evolution has accepted the media — including the video upload,
+  // which is the slow one. No timer is needed to "wait for the media".
+  const message2 = automation.message2?.trim();
+  const message3 = automation.message3?.trim();
+
+  if (message2) {
+    await sendTypingPresence(instanceName, senderPhone, 2000);
+    await evolutionProvider.sendText(businessId, senderPhone, message2);
+  }
+
+  if (message3) {
+    // Only pace the two follow-ups apart when both actually go out
+    if (message2) {
+      await new Promise<void>(r =>
+        setTimeout(r, FOLLOWUP_GAP_MS + Math.floor(Math.random() * FOLLOWUP_JITTER_MS)),
+      );
+    }
+    await sendTypingPresence(instanceName, senderPhone, 2000);
+    await evolutionProvider.sendText(businessId, senderPhone, message3);
   }
 }
 
