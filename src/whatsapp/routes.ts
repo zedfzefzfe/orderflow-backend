@@ -52,6 +52,10 @@ const REPLY_JITTER_MS = 15_000;
 const FOLLOWUP_GAP_MS = 1_000;
 const FOLLOWUP_JITTER_MS = 1_000;
 
+// Breathing room between the three blocks of the send sequence
+// (opener → media → follow-ups). Applied only between blocks that actually send.
+const STEP_DELAY_MS = 30_000;
+
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
 interface FlowConfig {
@@ -159,7 +163,11 @@ function matchAutomation<T extends AutomationRule>(
   return null;
 }
 
-// Photos, then the video, then the PDFs, then the script.
+// Three blocks: the opener script, then the media, then the optional follow-ups.
+// STEP_DELAY_MS separates them — but only ever between two blocks that actually
+// send, so a skipped block never leaves the customer waiting on silence.
+// Every send stays awaited, so blocks never overlap and the 30 s waits start
+// only once Evolution has accepted the previous block (video upload included).
 async function sendAutomationFlow(
   businessId: string,
   instanceName: string,
@@ -172,57 +180,66 @@ async function sendAutomationFlow(
 
   // Brief gap so WhatsApp doesn't bundle sequential media
   const gap = () => new Promise<void>(r => setTimeout(r, 500));
+  const pause = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
-  for (let i = 0; i < photoUrls.length; i++) {
-    await sendTypingPresence(instanceName, senderPhone, 2000);
-    await evolutionProvider.sendImage(businessId, senderPhone, photoUrls[i]);
-    if (i < photoUrls.length - 1 || videoUrl || documentUrls.length > 0) {
-      await gap();
-    }
-  }
+  // Flips on the first thing sent, so the leading block never waits first
+  let sentSomething = false;
 
-  if (videoUrl) {
-    await sendTypingPresence(instanceName, senderPhone, 2000);
-    await evolutionProvider.sendVideo(businessId, senderPhone, videoUrl);
-    if (documentUrls.length > 0) await gap();
-  }
-
-  for (let i = 0; i < documentUrls.length; i++) {
-    await sendTypingPresence(instanceName, senderPhone, 2000);
-    await evolutionProvider.sendDocument(
-      businessId,
-      senderPhone,
-      documentUrls[i],
-      documentNameFromUrl(documentUrls[i]),
-    );
-    if (i < documentUrls.length - 1) await gap();
-  }
-
+  // ── 1. Opener ───────────────────────────────────────────────────────────
   if (automation.welcomeMessage) {
     await sendTypingPresence(instanceName, senderPhone, 3000);
     await evolutionProvider.sendText(businessId, senderPhone, automation.welcomeMessage);
+    sentSomething = true;
   }
 
-  // Optional follow-ups. Every send above is awaited, so reaching this point
-  // already means Evolution has accepted the media — including the video upload,
-  // which is the slow one. No timer is needed to "wait for the media".
-  const message2 = automation.message2?.trim();
-  const message3 = automation.message3?.trim();
+  // ── 2. Media — video, then PDFs, then photos ────────────────────────────
+  if (videoUrl || documentUrls.length > 0 || photoUrls.length > 0) {
+    if (sentSomething) await pause(STEP_DELAY_MS);
 
-  if (message2) {
-    await sendTypingPresence(instanceName, senderPhone, 2000);
-    await evolutionProvider.sendText(businessId, senderPhone, message2);
-  }
-
-  if (message3) {
-    // Only pace the two follow-ups apart when both actually go out
-    if (message2) {
-      await new Promise<void>(r =>
-        setTimeout(r, FOLLOWUP_GAP_MS + Math.floor(Math.random() * FOLLOWUP_JITTER_MS)),
-      );
+    if (videoUrl) {
+      await sendTypingPresence(instanceName, senderPhone, 2000);
+      await evolutionProvider.sendVideo(businessId, senderPhone, videoUrl);
+      if (documentUrls.length > 0 || photoUrls.length > 0) await gap();
     }
-    await sendTypingPresence(instanceName, senderPhone, 2000);
-    await evolutionProvider.sendText(businessId, senderPhone, message3);
+
+    for (let i = 0; i < documentUrls.length; i++) {
+      await sendTypingPresence(instanceName, senderPhone, 2000);
+      await evolutionProvider.sendDocument(
+        businessId,
+        senderPhone,
+        documentUrls[i],
+        documentNameFromUrl(documentUrls[i]),
+      );
+      if (i < documentUrls.length - 1 || photoUrls.length > 0) await gap();
+    }
+
+    for (let i = 0; i < photoUrls.length; i++) {
+      await sendTypingPresence(instanceName, senderPhone, 2000);
+      await evolutionProvider.sendImage(businessId, senderPhone, photoUrls[i]);
+      if (i < photoUrls.length - 1) await gap();
+    }
+
+    sentSomething = true;
+  }
+
+  // ── 3. Optional follow-ups ──────────────────────────────────────────────
+  // Collected into a list rather than handled by two separate ifs: that way the
+  // 30 s wait lands before the first follow-up actually sent. With two ifs, an
+  // automation filling only message3 would fire it straight after the media.
+  const followUps = [automation.message2, automation.message3]
+    .map(m => m?.trim())
+    .filter((m): m is string => !!m);
+
+  if (followUps.length > 0) {
+    if (sentSomething) await pause(STEP_DELAY_MS);
+
+    for (let i = 0; i < followUps.length; i++) {
+      if (i > 0) {
+        await pause(FOLLOWUP_GAP_MS + Math.floor(Math.random() * FOLLOWUP_JITTER_MS));
+      }
+      await sendTypingPresence(instanceName, senderPhone, 2000);
+      await evolutionProvider.sendText(businessId, senderPhone, followUps[i]);
+    }
   }
 }
 
