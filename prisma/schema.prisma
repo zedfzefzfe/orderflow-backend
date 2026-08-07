@@ -272,7 +272,10 @@ model Automation {
   triggerMessage String   @map("trigger_message") @db.Text
   welcomeMessage String   @map("welcome_message") @db.Text
   photoUrls      String[] @map("photo_urls")
+  // Legacy single-video field, kept in sync with videoUrls[0] so the dashboard
+  // keeps working until it is updated to read videoUrls.
   videoUrl       String?  @map("video_url")
+  videoUrls      String[] @default([]) @map("video_urls")
   documentUrls   String[] @default([]) @map("document_urls")
   // Optional follow-ups sent after the media, in order. Null/empty = skipped.
   message2       String?  @map("message_2") @db.Text

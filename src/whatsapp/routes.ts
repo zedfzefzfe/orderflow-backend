@@ -125,6 +125,7 @@ interface AutomationRule {
   welcomeMessage: string;
   photoUrls: string[];
   videoUrl?: string | null;
+  videoUrls?: string[];
   documentUrls?: string[];
   message2?: string | null;
   message3?: string | null;
@@ -175,8 +176,13 @@ async function sendAutomationFlow(
   automation: AutomationRule,
 ): Promise<void> {
   const photoUrls = automation.photoUrls ?? [];
-  const videoUrl = automation.videoUrl ?? null;
   const documentUrls = automation.documentUrls ?? [];
+
+  // videoUrls is the source of truth; fall back to the legacy single field so a
+  // row written before the backfill still sends its video.
+  const videoUrls = automation.videoUrls?.length
+    ? automation.videoUrls
+    : automation.videoUrl ? [automation.videoUrl] : [];
 
   // Brief gap so WhatsApp doesn't bundle sequential media
   const gap = () => new Promise<void>(r => setTimeout(r, 500));
@@ -193,13 +199,15 @@ async function sendAutomationFlow(
   }
 
   // ── 2. Media — video, then PDFs, then photos ────────────────────────────
-  if (videoUrl || documentUrls.length > 0 || photoUrls.length > 0) {
+  if (videoUrls.length > 0 || documentUrls.length > 0 || photoUrls.length > 0) {
     if (sentSomething) await pause(STEP_DELAY_MS);
 
-    if (videoUrl) {
+    for (let i = 0; i < videoUrls.length; i++) {
       await sendTypingPresence(instanceName, senderPhone, 2000);
-      await evolutionProvider.sendVideo(businessId, senderPhone, videoUrl);
-      if (documentUrls.length > 0 || photoUrls.length > 0) await gap();
+      await evolutionProvider.sendVideo(businessId, senderPhone, videoUrls[i]);
+      if (i < videoUrls.length - 1 || documentUrls.length > 0 || photoUrls.length > 0) {
+        await gap();
+      }
     }
 
     for (let i = 0; i < documentUrls.length; i++) {
