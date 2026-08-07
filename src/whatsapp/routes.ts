@@ -44,9 +44,11 @@ const TRIGGER_NORMALIZED = 'montrezmoi vos modeles dispo';
 const FALLBACK_MESSAGE =
   'Bonjour et bienvenue ✨ Vous êtes intéressé par quel service ? Dites-moi et je vous envoie tout 😊';
 
-// Reply delay: 60–75 s of jitter so the reply never feels like a cron job.
-const REPLY_DELAY_MS = 60_000;
-const REPLY_JITTER_MS = 15_000;
+// Delay before the very first reply to a new contact: 10–15 s. Jittered so the
+// reply never feels like a cron job, but short enough that the lead is still
+// looking at their phone when the opener lands.
+const REPLY_DELAY_MS = 10_000;
+const REPLY_JITTER_MS = 5_000;
 
 // Pause between the two optional follow-up messages: 1–2 s.
 const FOLLOWUP_GAP_MS = 1_000;
