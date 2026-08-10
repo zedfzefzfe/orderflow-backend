@@ -74,11 +74,12 @@ const AUDIO_MIME = new Set([
   'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/wav', 'audio/webm',
 ]);
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024; // 16 MB, same WhatsApp media ceiling
+const MAX_AUDIOS = 2;
 const AUDIO_BUCKET = 'whatsapp-audio';
 
 const uploadAudio = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: MAX_AUDIO_BYTES, files: 1 },
+  limits: { fileSize: MAX_AUDIO_BYTES, files: MAX_AUDIOS },
   fileFilter: (_req, file, cb) => {
     if (AUDIO_MIME.has(file.mimetype)) {
       cb(null, true);
@@ -100,7 +101,7 @@ interface AutomationPayload {
   documentUrls: string[];
   message2: string | null;
   message3: string | null;
-  audioUrl: string | null;
+  audioUrls: string[];
   isActive: boolean;
   priority: number;
 }
@@ -219,17 +220,19 @@ function validatePayload(
     }
   }
 
-  // Sending null (or '') is how the dashboard clears the voice note on save
-  if (body.audioUrl !== undefined) {
-    if (body.audioUrl === null) {
-      data.audioUrl = null;
-    } else if (typeof body.audioUrl === 'string') {
-      data.audioUrl = body.audioUrl.trim() || null;
-    } else {
-      return { error: 'audioUrl doit être une URL ou null' };
+  // A shorter array than the stored one is how a voice note gets removed
+  if (body.audioUrls !== undefined) {
+    if (!Array.isArray(body.audioUrls)) {
+      return { error: 'audioUrls doit être un tableau d\'URLs' };
     }
+    if (body.audioUrls.length > MAX_AUDIOS) {
+      return { error: `audioUrls ne peut pas dépasser ${MAX_AUDIOS} audios` };
+    }
+    data.audioUrls = body.audioUrls
+      .filter((u): u is string => typeof u === 'string' && u.trim().length > 0)
+      .map(u => u.trim());
   } else if (!partial) {
-    data.audioUrl = null;
+    data.audioUrls = [];
   }
 
   if (body.isActive !== undefined) {
@@ -284,7 +287,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
         documentUrls: result.data.documentUrls ?? [],
         message2: result.data.message2 ?? null,
         message3: result.data.message3 ?? null,
-        audioUrl: result.data.audioUrl ?? null,
+        audioUrls: result.data.audioUrls ?? [],
         isActive: result.data.isActive ?? true,
         priority: result.data.priority ?? 0,
       },
@@ -648,19 +651,19 @@ router.post(
 
 // ── Audio upload ──────────────────────────────────────────────────────────────
 
-// POST /api/automations/:id/audio — multipart field name: "audio" (single)
+// POST /api/automations/:id/audio — multipart field name: "audio" (repeatable)
 router.post(
   '/:id/audio',
   requireAuth,
   (req: AuthenticatedRequest, res: Response, next) => {
-    uploadAudio.single('audio')(req, res, (err) => {
+    uploadAudio.array('audio', MAX_AUDIOS)(req, res, (err) => {
       if (err instanceof multer.MulterError) {
         if (err.code === 'LIMIT_FILE_SIZE') {
-          res.status(400).json({ error: 'Audio trop volumineux (max 16 Mo)' });
+          res.status(400).json({ error: 'Audio trop volumineux (max 16 Mo par fichier)' });
           return;
         }
         if (err.code === 'LIMIT_FILE_COUNT') {
-          res.status(400).json({ error: 'Un seul audio par automation' });
+          res.status(400).json({ error: `${MAX_AUDIOS} audios maximum par automation` });
           return;
         }
         if (err.code === 'LIMIT_UNEXPECTED_FILE') {
@@ -692,9 +695,20 @@ router.post(
         return;
       }
 
-      const file = req.file;
-      if (!file) {
+      const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+      if (files.length === 0) {
         res.status(400).json({ error: 'Aucun fichier reçu' });
+        return;
+      }
+
+      // multer caps a single request; this caps the total already stored
+      if (existing.audioUrls.length + files.length > MAX_AUDIOS) {
+        const left = MAX_AUDIOS - existing.audioUrls.length;
+        res.status(400).json({
+          error: left > 0
+            ? `${MAX_AUDIOS} audios maximum — il reste ${left} emplacement`
+            : `${MAX_AUDIOS} audios maximum — supprimez-en un d'abord`,
+        });
         return;
       }
 
@@ -702,29 +716,32 @@ router.post(
         .createBucket(AUDIO_BUCKET, { public: true, fileSizeLimit: MAX_AUDIO_BYTES })
         .catch(() => {});
 
-      const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const path = `${businessId}/${id}/${Date.now()}-${safeName}`;
+      const urls: string[] = [];
+      for (const file of files) {
+        const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const path = `${businessId}/${id}/${Date.now()}-${safeName}`;
 
-      const { error: uploadError } = await supabaseAdmin.storage
-        .from(AUDIO_BUCKET)
-        .upload(path, file.buffer, { contentType: file.mimetype, upsert: false });
+        const { error: uploadError } = await supabaseAdmin.storage
+          .from(AUDIO_BUCKET)
+          .upload(path, file.buffer, { contentType: file.mimetype, upsert: false });
 
-      if (uploadError) {
-        console.error('[automations] Supabase audio upload error:', uploadError);
-        res.status(500).json({ error: 'Échec du téléversement vers Supabase Storage' });
-        return;
+        if (uploadError) {
+          console.error('[automations] Supabase audio upload error:', uploadError);
+          res.status(500).json({ error: 'Échec du téléversement vers Supabase Storage' });
+          return;
+        }
+
+        const { data: { publicUrl } } = supabaseAdmin.storage.from(AUDIO_BUCKET).getPublicUrl(path);
+        urls.push(publicUrl);
       }
 
-      const { data: { publicUrl } } = supabaseAdmin.storage.from(AUDIO_BUCKET).getPublicUrl(path);
-
-      // One voice note per automation: the new upload replaces the previous URL.
-      // The old file stays in Storage, same as replaced media elsewhere.
+      // Appended, like videos. Old files stay in Storage.
       const automation = await prisma.automation.update({
         where: { id },
-        data: { audioUrl: publicUrl },
+        data: { audioUrls: { push: urls } },
       });
 
-      res.status(201).json({ url: automation.audioUrl, automation });
+      res.status(201).json({ urls: automation.audioUrls, automation });
     } catch (err) {
       console.error('[automations] audio upload error:', err);
       res.status(500).json({ error: 'Erreur interne lors du téléversement' });

@@ -50,14 +50,18 @@ const FALLBACK_MESSAGE =
 const REPLY_DELAY_MS = 5_000;
 const REPLY_JITTER_MS = 0;
 
-// Pause between consecutive items of the closing block (message2 → message3 →
-// voice note): 5 s.
-const FOLLOWUP_GAP_MS = 5_000;
-const FOLLOWUP_JITTER_MS = 0;
+// Between the opener and the media block.
+const OPENER_DELAY_MS = 10_000;
 
-// Breathing room between the three blocks of the send sequence
-// (opener → media → closing block). Applied only between blocks that actually send.
-const STEP_DELAY_MS = 10_000;
+// Between the media and the closing block. 0 = the messages follow the media
+// straight on, with no wait.
+const CLOSING_DELAY_MS = 0;
+
+// Between consecutive closing texts (message2 → message3).
+const MESSAGE_GAP_MS = 1_000;
+
+// Between the two voice notes.
+const AUDIO_GAP_MS = 5_000;
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
@@ -137,7 +141,7 @@ interface AutomationRule {
   documentUrls?: string[];
   message2?: string | null;
   message3?: string | null;
-  audioUrl?: string | null;
+  audioUrls?: string[];
 }
 
 /** Storage paths are "<timestamp>-<original name>" — recover the readable part
@@ -209,7 +213,7 @@ async function sendAutomationFlow(
 
   // ── 2. Media — video, then PDFs, then photos ────────────────────────────
   if (videoUrls.length > 0 || documentUrls.length > 0 || photoUrls.length > 0) {
-    if (sentSomething) await pause(STEP_DELAY_MS);
+    if (sentSomething) await pause(OPENER_DELAY_MS);
 
     for (let i = 0; i < videoUrls.length; i++) {
       await sendTypingPresence(instanceName, senderPhone, 2000);
@@ -239,34 +243,35 @@ async function sendAutomationFlow(
     sentSomething = true;
   }
 
-  // ── 3. Optional follow-ups ──────────────────────────────────────────────
-  // Collected into a list rather than handled by two separate ifs: that way the
-  // 30 s wait lands before the first follow-up actually sent. With two ifs, an
-  // automation filling only message3 would fire it straight after the media.
+  // ── 3. Closing block — texts, then the voice notes ──────────────────────
+  // Collected into lists rather than handled by separate ifs: that way the
+  // leading wait lands before the first item actually sent. With separate ifs,
+  // an automation filling only message3 would fire it out of position.
   const followUps = [automation.message2, automation.message3]
     .map(m => m?.trim())
     .filter((m): m is string => !!m);
-  const audioUrl = automation.audioUrl?.trim();
+  const audioUrls = (automation.audioUrls ?? [])
+    .map(a => a?.trim())
+    .filter((a): a is string => !!a);
 
-  if (followUps.length > 0 || audioUrl) {
-    if (sentSomething) await pause(STEP_DELAY_MS);
+  if (followUps.length > 0 || audioUrls.length > 0) {
+    if (sentSomething && CLOSING_DELAY_MS > 0) await pause(CLOSING_DELAY_MS);
 
     for (let i = 0; i < followUps.length; i++) {
-      if (i > 0) {
-        await pause(FOLLOWUP_GAP_MS + Math.floor(Math.random() * FOLLOWUP_JITTER_MS));
-      }
+      if (i > 0) await pause(MESSAGE_GAP_MS);
       await sendTypingPresence(instanceName, senderPhone, 2000);
       await evolutionProvider.sendText(businessId, senderPhone, followUps[i]);
     }
 
-    // Voice note last. "recording" rather than "composing" so the indicator
+    // Voice notes last. "recording" rather than "composing" so the indicator
     // matches what is about to arrive.
-    if (audioUrl) {
-      if (followUps.length > 0) {
-        await pause(FOLLOWUP_GAP_MS + Math.floor(Math.random() * FOLLOWUP_JITTER_MS));
-      }
+    for (let i = 0; i < audioUrls.length; i++) {
+      // The texts flow straight into the first voice note; only the voice notes
+      // themselves are spaced apart, so each one gets its own moment.
+      if (i > 0) await pause(AUDIO_GAP_MS);
+      else if (followUps.length > 0) await pause(MESSAGE_GAP_MS);
       await sendTypingPresence(instanceName, senderPhone, 3000, 'recording');
-      await evolutionProvider.sendAudio(businessId, senderPhone, audioUrl);
+      await evolutionProvider.sendAudio(businessId, senderPhone, audioUrls[i]);
     }
   }
 }
