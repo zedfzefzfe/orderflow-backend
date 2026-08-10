@@ -70,14 +70,19 @@ interface FlowConfig {
   replyCadeau: string;
 }
 
-// Show "typing…" indicator before a message — non-critical, silently ignored if
-// the Evolution instance doesn't support this endpoint or the call fails.
-async function sendTypingPresence(instanceName: string, phoneNumber: string, durationMs: number): Promise<void> {
+// Show "typing…" (or "recording…") indicator before a message — non-critical,
+// silently ignored if the Evolution instance doesn't support this endpoint.
+async function sendTypingPresence(
+  instanceName: string,
+  phoneNumber: string,
+  durationMs: number,
+  presence: 'composing' | 'recording' = 'composing',
+): Promise<void> {
   try {
     await fetch(`${EVOLUTION_BASE_URL}/chat/sendPresence/${instanceName}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', apikey: process.env.EVOLUTION_API_KEY! },
-      body: JSON.stringify({ number: phoneNumber, options: { presence: 'composing', delay: durationMs } }),
+      body: JSON.stringify({ number: phoneNumber, options: { presence, delay: durationMs } }),
     });
   } catch {
     // Presence API is optional — never crash the flow if it fails
@@ -131,6 +136,7 @@ interface AutomationRule {
   documentUrls?: string[];
   message2?: string | null;
   message3?: string | null;
+  audioUrl?: string | null;
 }
 
 /** Storage paths are "<timestamp>-<original name>" — recover the readable part
@@ -239,8 +245,9 @@ async function sendAutomationFlow(
   const followUps = [automation.message2, automation.message3]
     .map(m => m?.trim())
     .filter((m): m is string => !!m);
+  const audioUrl = automation.audioUrl?.trim();
 
-  if (followUps.length > 0) {
+  if (followUps.length > 0 || audioUrl) {
     if (sentSomething) await pause(STEP_DELAY_MS);
 
     for (let i = 0; i < followUps.length; i++) {
@@ -249,6 +256,16 @@ async function sendAutomationFlow(
       }
       await sendTypingPresence(instanceName, senderPhone, 2000);
       await evolutionProvider.sendText(businessId, senderPhone, followUps[i]);
+    }
+
+    // Voice note last. "recording" rather than "composing" so the indicator
+    // matches what is about to arrive.
+    if (audioUrl) {
+      if (followUps.length > 0) {
+        await pause(FOLLOWUP_GAP_MS + Math.floor(Math.random() * FOLLOWUP_JITTER_MS));
+      }
+      await sendTypingPresence(instanceName, senderPhone, 3000, 'recording');
+      await evolutionProvider.sendAudio(businessId, senderPhone, audioUrl);
     }
   }
 }

@@ -280,6 +280,8 @@ model Automation {
   // Optional follow-ups sent after the media, in order. Null/empty = skipped.
   message2       String?  @map("message_2") @db.Text
   message3       String?  @map("message_3") @db.Text
+  // Voice note sent last, after message3. Null = skipped.
+  audioUrl       String?  @map("audio_url")
   isActive       Boolean  @default(true) @map("is_active")
   priority       Int      @default(0)
   createdAt      DateTime @default(now()) @map("created_at")

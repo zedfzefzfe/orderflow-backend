@@ -66,6 +66,28 @@ const uploadVideo = multer({
   },
 });
 
+// ── Audio upload config ───────────────────────────────────────────────────────
+
+// Evolution transcodes to OGG/Opus on send, so accept what a phone records.
+const AUDIO_MIME = new Set([
+  'audio/mpeg', 'audio/mp3', 'audio/ogg', 'audio/opus',
+  'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/wav', 'audio/webm',
+]);
+const MAX_AUDIO_BYTES = 16 * 1024 * 1024; // 16 MB, same WhatsApp media ceiling
+const AUDIO_BUCKET = 'whatsapp-audio';
+
+const uploadAudio = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_AUDIO_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (AUDIO_MIME.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('TYPE_ERROR'));
+    }
+  },
+});
+
 // ── Payload validation ────────────────────────────────────────────────────────
 
 interface AutomationPayload {
@@ -78,6 +100,7 @@ interface AutomationPayload {
   documentUrls: string[];
   message2: string | null;
   message3: string | null;
+  audioUrl: string | null;
   isActive: boolean;
   priority: number;
 }
@@ -196,6 +219,19 @@ function validatePayload(
     }
   }
 
+  // Sending null (or '') is how the dashboard clears the voice note on save
+  if (body.audioUrl !== undefined) {
+    if (body.audioUrl === null) {
+      data.audioUrl = null;
+    } else if (typeof body.audioUrl === 'string') {
+      data.audioUrl = body.audioUrl.trim() || null;
+    } else {
+      return { error: 'audioUrl doit être une URL ou null' };
+    }
+  } else if (!partial) {
+    data.audioUrl = null;
+  }
+
   if (body.isActive !== undefined) {
     data.isActive = Boolean(body.isActive);
   }
@@ -248,6 +284,7 @@ router.post('/', requireAuth, async (req: AuthenticatedRequest, res: Response) =
         documentUrls: result.data.documentUrls ?? [],
         message2: result.data.message2 ?? null,
         message3: result.data.message3 ?? null,
+        audioUrl: result.data.audioUrl ?? null,
         isActive: result.data.isActive ?? true,
         priority: result.data.priority ?? 0,
       },
@@ -604,6 +641,92 @@ router.post(
       res.status(201).json({ urls: automation.videoUrls, automation });
     } catch (err) {
       console.error('[automations] video upload error:', err);
+      res.status(500).json({ error: 'Erreur interne lors du téléversement' });
+    }
+  },
+);
+
+// ── Audio upload ──────────────────────────────────────────────────────────────
+
+// POST /api/automations/:id/audio — multipart field name: "audio" (single)
+router.post(
+  '/:id/audio',
+  requireAuth,
+  (req: AuthenticatedRequest, res: Response, next) => {
+    uploadAudio.single('audio')(req, res, (err) => {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          res.status(400).json({ error: 'Audio trop volumineux (max 16 Mo)' });
+          return;
+        }
+        if (err.code === 'LIMIT_FILE_COUNT') {
+          res.status(400).json({ error: 'Un seul audio par automation' });
+          return;
+        }
+        if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+          res.status(400).json({ error: 'Le champ du formulaire doit s\'appeler "audio"' });
+          return;
+        }
+      }
+      if (err instanceof Error && err.message === 'TYPE_ERROR') {
+        res.status(400).json({ error: 'Type de fichier non accepté (mp3, ogg, m4a, wav, webm)' });
+        return;
+      }
+      if (err) {
+        res.status(400).json({ error: 'Erreur lors de la réception du fichier' });
+        return;
+      }
+      next();
+    });
+  },
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { businessId } = req.user!;
+
+      const existing = await prisma.automation.findFirst({
+        where: { id, businessId },
+      });
+      if (!existing) {
+        res.status(404).json({ error: 'Automation introuvable' });
+        return;
+      }
+
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'Aucun fichier reçu' });
+        return;
+      }
+
+      await supabaseAdmin.storage
+        .createBucket(AUDIO_BUCKET, { public: true, fileSizeLimit: MAX_AUDIO_BYTES })
+        .catch(() => {});
+
+      const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = `${businessId}/${id}/${Date.now()}-${safeName}`;
+
+      const { error: uploadError } = await supabaseAdmin.storage
+        .from(AUDIO_BUCKET)
+        .upload(path, file.buffer, { contentType: file.mimetype, upsert: false });
+
+      if (uploadError) {
+        console.error('[automations] Supabase audio upload error:', uploadError);
+        res.status(500).json({ error: 'Échec du téléversement vers Supabase Storage' });
+        return;
+      }
+
+      const { data: { publicUrl } } = supabaseAdmin.storage.from(AUDIO_BUCKET).getPublicUrl(path);
+
+      // One voice note per automation: the new upload replaces the previous URL.
+      // The old file stays in Storage, same as replaced media elsewhere.
+      const automation = await prisma.automation.update({
+        where: { id },
+        data: { audioUrl: publicUrl },
+      });
+
+      res.status(201).json({ url: automation.audioUrl, automation });
+    } catch (err) {
+      console.error('[automations] audio upload error:', err);
       res.status(500).json({ error: 'Erreur interne lors du téléversement' });
     }
   },

@@ -35,6 +35,8 @@ export interface WhatsAppProvider {
   sendImage(businessId: string, to: string, imageUrl: string, caption?: string): Promise<void>;
   sendVideo(businessId: string, to: string, videoUrl: string, caption?: string): Promise<void>;
   sendDocument(businessId: string, to: string, documentUrl: string, fileName: string): Promise<void>;
+  /** Sends as a WhatsApp voice note (the waveform bubble), not a file attachment. */
+  sendAudio(businessId: string, to: string, audioUrl: string): Promise<void>;
   /** Register or update the Evolution webhook for an already-known instanceName. */
   setWebhook(instanceName: string, webhookUrl: string): Promise<void>;
   /** Try multiple paths to register the webhook, logging which one succeeds. */
@@ -235,6 +237,21 @@ export const evolutionProvider: WhatsAppProvider = {
         mimetype: 'application/pdf',
         media: documentUrl,
         fileName,
+      }),
+    });
+  },
+
+  // sendWhatsAppAudio (not sendMedia) is what makes WhatsApp render a real voice
+  // note. encoding:true asks Evolution to transcode to OGG/Opus, so an MP3 or
+  // M4A upload still arrives playable rather than as a file attachment.
+  async sendAudio(businessId, to, audioUrl) {
+    const name = instanceNameFor(businessId);
+    await evoFetch(`/message/sendWhatsAppAudio/${name}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        number: to,
+        audio: audioUrl,
+        encoding: true,
       }),
     });
   },
