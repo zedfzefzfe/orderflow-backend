@@ -44,19 +44,20 @@ const TRIGGER_NORMALIZED = 'montrezmoi vos modeles dispo';
 const FALLBACK_MESSAGE =
   'Bonjour et bienvenue ✨ Vous êtes intéressé par quel service ? Dites-moi et je vous envoie tout 😊';
 
-// Delay before the very first reply to a new contact: 10–15 s. Jittered so the
-// reply never feels like a cron job, but short enough that the lead is still
-// looking at their phone when the opener lands.
-const REPLY_DELAY_MS = 10_000;
-const REPLY_JITTER_MS = 5_000;
+// Delay before the very first reply to a new contact: 5 s.
+// Raise REPLY_JITTER_MS above 0 to spread replies out again — a fixed delay
+// makes every reply land at exactly the same interval, which reads as a bot.
+const REPLY_DELAY_MS = 5_000;
+const REPLY_JITTER_MS = 0;
 
-// Pause between the two optional follow-up messages: 1–2 s.
-const FOLLOWUP_GAP_MS = 1_000;
-const FOLLOWUP_JITTER_MS = 1_000;
+// Pause between consecutive items of the closing block (message2 → message3 →
+// voice note): 5 s.
+const FOLLOWUP_GAP_MS = 5_000;
+const FOLLOWUP_JITTER_MS = 0;
 
 // Breathing room between the three blocks of the send sequence
-// (opener → media → follow-ups). Applied only between blocks that actually send.
-const STEP_DELAY_MS = 30_000;
+// (opener → media → closing block). Applied only between blocks that actually send.
+const STEP_DELAY_MS = 10_000;
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
