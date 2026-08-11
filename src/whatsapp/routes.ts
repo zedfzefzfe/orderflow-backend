@@ -243,35 +243,41 @@ async function sendAutomationFlow(
     sentSomething = true;
   }
 
-  // ── 3. Closing block — texts, then the voice notes ──────────────────────
-  // Collected into lists rather than handled by separate ifs: that way the
-  // leading wait lands before the first item actually sent. With separate ifs,
-  // an automation filling only message3 would fire it out of position.
-  const followUps = [automation.message2, automation.message3]
-    .map(m => m?.trim())
-    .filter((m): m is string => !!m);
+  // ── 3. Closing block — message2, the voice notes, then message3 ─────────
+  // message3 is the qualification question, so it lands after the voice notes
+  // that set it up. Built as one ordered list rather than separate loops: the
+  // leading wait then falls before whichever item is actually sent first, and
+  // an automation filling only some of them still keeps this order.
+  const message2 = automation.message2?.trim();
+  const message3 = automation.message3?.trim();
   const audioUrls = (automation.audioUrls ?? [])
     .map(a => a?.trim())
     .filter((a): a is string => !!a);
 
-  if (followUps.length > 0 || audioUrls.length > 0) {
+  const closing: Array<{ kind: 'text' | 'audio'; value: string }> = [];
+  if (message2) closing.push({ kind: 'text', value: message2 });
+  for (const url of audioUrls) closing.push({ kind: 'audio', value: url });
+  if (message3) closing.push({ kind: 'text', value: message3 });
+
+  if (closing.length > 0) {
     if (sentSomething && CLOSING_DELAY_MS > 0) await pause(CLOSING_DELAY_MS);
 
-    for (let i = 0; i < followUps.length; i++) {
-      if (i > 0) await pause(MESSAGE_GAP_MS);
-      await sendTypingPresence(instanceName, senderPhone, 2000);
-      await evolutionProvider.sendText(businessId, senderPhone, followUps[i]);
-    }
+    for (let i = 0; i < closing.length; i++) {
+      if (i > 0) {
+        // Only two consecutive voice notes get the long gap — each one needs
+        // its own moment. Everything else flows at conversation pace.
+        const betweenVoiceNotes = closing[i].kind === 'audio' && closing[i - 1].kind === 'audio';
+        await pause(betweenVoiceNotes ? AUDIO_GAP_MS : MESSAGE_GAP_MS);
+      }
 
-    // Voice notes last. "recording" rather than "composing" so the indicator
-    // matches what is about to arrive.
-    for (let i = 0; i < audioUrls.length; i++) {
-      // The texts flow straight into the first voice note; only the voice notes
-      // themselves are spaced apart, so each one gets its own moment.
-      if (i > 0) await pause(AUDIO_GAP_MS);
-      else if (followUps.length > 0) await pause(MESSAGE_GAP_MS);
-      await sendTypingPresence(instanceName, senderPhone, 3000, 'recording');
-      await evolutionProvider.sendAudio(businessId, senderPhone, audioUrls[i]);
+      if (closing[i].kind === 'audio') {
+        // "recording" rather than "composing" so the indicator matches what arrives
+        await sendTypingPresence(instanceName, senderPhone, 3000, 'recording');
+        await evolutionProvider.sendAudio(businessId, senderPhone, closing[i].value);
+      } else {
+        await sendTypingPresence(instanceName, senderPhone, 2000);
+        await evolutionProvider.sendText(businessId, senderPhone, closing[i].value);
+      }
     }
   }
 }
