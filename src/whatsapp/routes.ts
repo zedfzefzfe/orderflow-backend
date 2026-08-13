@@ -44,10 +44,10 @@ const TRIGGER_NORMALIZED = 'montrezmoi vos modeles dispo';
 const FALLBACK_MESSAGE =
   'Bonjour et bienvenue ✨ Vous êtes intéressé par quel service ? Dites-moi et je vous envoie tout 😊';
 
-// Delay before the very first reply to a new contact: 5 s.
+// Delay before the very first reply to a new contact: 50 s.
 // Raise REPLY_JITTER_MS above 0 to spread replies out again — a fixed delay
 // makes every reply land at exactly the same interval, which reads as a bot.
-const REPLY_DELAY_MS = 5_000;
+const REPLY_DELAY_MS = 50_000;
 const REPLY_JITTER_MS = 0;
 
 // Between the opener and the media block.
@@ -62,6 +62,10 @@ const MESSAGE_GAP_MS = 1_000;
 
 // Between the two voice notes.
 const AUDIO_GAP_MS = 5_000;
+
+// Before message3, the closing question — long enough for the customer to have
+// listened to the voice notes that set it up.
+const MESSAGE3_DELAY_MS = 40_000;
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
@@ -254,20 +258,25 @@ async function sendAutomationFlow(
     .map(a => a?.trim())
     .filter((a): a is string => !!a);
 
-  const closing: Array<{ kind: 'text' | 'audio'; value: string }> = [];
+  const closing: Array<{ kind: 'text' | 'audio'; value: string; isMessage3?: boolean }> = [];
   if (message2) closing.push({ kind: 'text', value: message2 });
   for (const url of audioUrls) closing.push({ kind: 'audio', value: url });
-  if (message3) closing.push({ kind: 'text', value: message3 });
+  if (message3) closing.push({ kind: 'text', value: message3, isMessage3: true });
 
   if (closing.length > 0) {
     if (sentSomething && CLOSING_DELAY_MS > 0) await pause(CLOSING_DELAY_MS);
 
     for (let i = 0; i < closing.length; i++) {
       if (i > 0) {
-        // Only two consecutive voice notes get the long gap — each one needs
-        // its own moment. Everything else flows at conversation pace.
+        // message3 waits longest — it is the closing question, and the customer
+        // needs time to hear the voice notes that set it up before answering.
+        // Two consecutive voice notes get the medium gap so each has its moment.
         const betweenVoiceNotes = closing[i].kind === 'audio' && closing[i - 1].kind === 'audio';
-        await pause(betweenVoiceNotes ? AUDIO_GAP_MS : MESSAGE_GAP_MS);
+        await pause(
+          closing[i].isMessage3 ? MESSAGE3_DELAY_MS
+          : betweenVoiceNotes ? AUDIO_GAP_MS
+          : MESSAGE_GAP_MS,
+        );
       }
 
       if (closing[i].kind === 'audio') {
