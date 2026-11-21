@@ -13,8 +13,10 @@ if (!RAW || !EVOLUTION_KEY) {
     !RAW && 'EVOLUTION_API_URL',
     !EVOLUTION_KEY && 'EVOLUTION_API_KEY',
   ].filter(Boolean).join(', ');
-  console.error(`[FATAL] Missing required environment variables: ${missing}`);
-  process.exit(1);
+  // Don't crash the whole server just because the Evolution WhatsApp provider
+  // isn't configured yet — the dashboard, auth and other routes must still boot.
+  // Evolution calls will throw clearly only if actually invoked while unset.
+  console.warn(`[evolution] Not configured — missing ${missing}. Evolution WhatsApp sending is disabled until these are set.`);
 }
 
 console.log('[evolution] base URL:', EVOLUTION_BASE_URL);
