@@ -73,7 +73,9 @@ async function configureEvolutionWebhook() {
   const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL;
   const EVOLUTION_API_KEY = process.env.AUTHENTICATION_API_KEY;
   const INSTANCE = 'merchant_8ececf89-a697-47cc-b7c9-124951348c80';
-  const BACKEND_URL = process.env.RENDER_EXTERNAL_URL
+  const BACKEND_URL = process.env.SPACE_HOST
+    ? `https://${process.env.SPACE_HOST}`
+    : process.env.RENDER_EXTERNAL_URL
     || (process.env.RAILWAY_PUBLIC_DOMAIN
       ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
       : 'https://orderflow-backend-production-9d9d.up.railway.app');
@@ -116,7 +118,9 @@ app.listen(PORT, () => {
   configureEvolutionWebhook();
 });
 
-const SELF_URL = process.env.RENDER_EXTERNAL_URL
+const SELF_URL = process.env.SPACE_HOST
+  ? `https://${process.env.SPACE_HOST}`
+  : process.env.RENDER_EXTERNAL_URL
   || (process.env.RAILWAY_PUBLIC_DOMAIN
     ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
     : 'https://orderflow-backend-production-9d9d.up.railway.app');
