@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import { supabaseAdmin } from '../lib/supabase.js';
-import { prisma } from '../lib/prisma.js';
+import jwt from 'jsonwebtoken';
+
+const JWT_SECRET = process.env.JWT_SECRET || 'dev-insecure-secret-change-me';
 
 export interface AuthenticatedRequest extends Request {
   user?: {
@@ -11,11 +12,11 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
-export async function requireAuth(
+export function requireAuth(
   req: AuthenticatedRequest,
   res: Response,
-  next: NextFunction
-): Promise<void> {
+  next: NextFunction,
+): void {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Missing authorization header' });
@@ -25,52 +26,22 @@ export async function requireAuth(
   const token = authHeader.slice(7);
 
   try {
-    const { data, error } = await supabaseAdmin.auth.getUser(token);
-    if (error || !data.user || !data.user.email) {
-      res.status(401).json({ error: 'Invalid or expired token' });
-      return;
-    }
-
-    let dbUser = await prisma.user.findFirst({
-      where: { email: data.user.email },
-      include: { business: true },
-    });
-
-    // Auto-provision: create business + user for new Supabase sign-ups
-    if (!dbUser) {
-      const emailName = data.user.email.split('@')[0];
-      const trialEndsAt = new Date();
-      trialEndsAt.setDate(trialEndsAt.getDate() + 30);
-      const business = await prisma.business.create({
-        data: {
-          name: `${emailName}'s Shop`,
-          email: data.user.email,
-          plan: 'trial',
-          trialEndsAt,
-        },
-      });
-      dbUser = await prisma.user.create({
-        data: {
-          email: data.user.email,
-          password: '',
-          businessId: business.id,
-          role: 'owner',
-        },
-        include: { business: true },
-      });
-      console.log(`[auth] Auto-provisioned user ${data.user.email} → business ${business.id}`);
-    }
+    const payload = jwt.verify(token, JWT_SECRET) as {
+      userId: string;
+      email: string;
+      businessId: string;
+      role: string;
+    };
 
     req.user = {
-      id: dbUser.id,
-      email: dbUser.email,
-      businessId: dbUser.businessId,
-      role: dbUser.role,
+      id: payload.userId,
+      email: payload.email,
+      businessId: payload.businessId,
+      role: payload.role,
     };
 
     next();
   } catch (err) {
-    console.error('[auth] Auth check failed:', err);
-    res.status(500).json({ error: 'Auth check failed' });
+    res.status(401).json({ error: 'Invalid or expired token' });
   }
 }

@@ -18,6 +18,7 @@ import agentRoutes from './routes/agent.js';
 import customerRoutes from './routes/customers.js';
 import automationRoutes from './routes/automations.js';
 import whatsappRoutes from './whatsapp/routes.js';
+import authRoutes from './routes/auth.js';
 import { sendAllWeeklyReports } from './services/weeklyReport.js';
 import { prisma } from './lib/prisma.js';
 import './cron/deliveryReminders.js';
@@ -42,6 +43,7 @@ app.get('/health', (_req, res) => {
 });
 
 // Routes
+app.use('/api/auth', authRoutes);
 app.use('/api/webhook/whatsapp', webhookRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/stats', statsRoutes);
@@ -71,9 +73,10 @@ async function configureEvolutionWebhook() {
   const EVOLUTION_API_URL = process.env.EVOLUTION_API_URL;
   const EVOLUTION_API_KEY = process.env.AUTHENTICATION_API_KEY;
   const INSTANCE = 'merchant_8ececf89-a697-47cc-b7c9-124951348c80';
-  const BACKEND_URL = process.env.RAILWAY_PUBLIC_DOMAIN
-    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-    : 'https://orderflow-backend-production-9d9d.up.railway.app';
+  const BACKEND_URL = process.env.RENDER_EXTERNAL_URL
+    || (process.env.RAILWAY_PUBLIC_DOMAIN
+      ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+      : 'https://orderflow-backend-production-9d9d.up.railway.app');
 
   if (!EVOLUTION_API_URL || !EVOLUTION_API_KEY) return;
 
@@ -113,9 +116,10 @@ app.listen(PORT, () => {
   configureEvolutionWebhook();
 });
 
-const SELF_URL = process.env.RAILWAY_PUBLIC_DOMAIN
-  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
-  : 'https://orderflow-backend-production-9d9d.up.railway.app';
+const SELF_URL = process.env.RENDER_EXTERNAL_URL
+  || (process.env.RAILWAY_PUBLIC_DOMAIN
+    ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`
+    : 'https://orderflow-backend-production-9d9d.up.railway.app');
 
 setInterval(async () => {
   try {
