@@ -414,7 +414,12 @@ async function processWebhook(instanceName: string, payload: Record<string, unkn
     if (key.fromMe === true) return;
 
     const remoteJid = (key.remoteJid as string) ?? '';
-    if (!remoteJid || remoteJid.endsWith('@g.us')) return; // skip group chats
+    // Skip group chats (@g.us) and WhatsApp's @lid privacy identifier. When a
+    // contact is on LID, WhatsApp delivers the SAME inbound message twice — once
+    // as the real phone JID (@s.whatsapp.net) and once as @lid — which fired the
+    // whole funnel twice. The phone JID is always delivered alongside the @lid
+    // copy, so we act only on it and drop the @lid duplicate.
+    if (!remoteJid || remoteJid.endsWith('@g.us') || remoteJid.endsWith('@lid')) return;
 
     // Normalize: strip @s.whatsapp.net suffix
     const senderPhone = remoteJid.replace('@s.whatsapp.net', '');
