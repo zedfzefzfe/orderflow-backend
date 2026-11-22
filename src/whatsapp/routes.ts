@@ -210,6 +210,18 @@ async function sendAutomationFlow(
   // Flips on the first thing sent, so the leading block never waits first
   let sentSomething = false;
 
+  // Each network send is best-effort: if one item fails (e.g. a momentary socket
+  // drop mid media-upload), log it and keep going so the text pitch and the
+  // closing question still reach the customer instead of the whole flow aborting
+  // on the first error. evoFetch already retries transient 5xx under the hood.
+  const trySend = async (label: string, fn: () => Promise<void>): Promise<void> => {
+    try {
+      await fn();
+    } catch (err) {
+      console.error(`[automation] ${label} failed for ${senderPhone}:`, err);
+    }
+  };
+
   // ── 1. Opener — split into separate bubbles on a blank line ─────────────
   if (automation.welcomeMessage) {
     const openerParts = automation.welcomeMessage
@@ -219,7 +231,7 @@ async function sendAutomationFlow(
     for (let i = 0; i < openerParts.length; i++) {
       if (i > 0) await pause(OPENER_SPLIT_GAP_MS);
       await sendTypingPresence(instanceName, senderPhone, 2000);
-      await evolutionProvider.sendText(businessId, senderPhone, openerParts[i]);
+      await trySend(`opener[${i}]`, () => evolutionProvider.sendText(businessId, senderPhone, openerParts[i]));
     }
     if (openerParts.length > 0) sentSomething = true;
   }
@@ -230,7 +242,7 @@ async function sendAutomationFlow(
 
     for (let i = 0; i < videoUrls.length; i++) {
       await sendTypingPresence(instanceName, senderPhone, 2000);
-      await evolutionProvider.sendVideo(businessId, senderPhone, videoUrls[i]);
+      await trySend(`video[${i}]`, () => evolutionProvider.sendVideo(businessId, senderPhone, videoUrls[i]));
       if (i < videoUrls.length - 1 || documentUrls.length > 0 || photoUrls.length > 0) {
         await gap();
       }
@@ -238,18 +250,18 @@ async function sendAutomationFlow(
 
     for (let i = 0; i < documentUrls.length; i++) {
       await sendTypingPresence(instanceName, senderPhone, 2000);
-      await evolutionProvider.sendDocument(
+      await trySend(`document[${i}]`, () => evolutionProvider.sendDocument(
         businessId,
         senderPhone,
         documentUrls[i],
         documentNameFromUrl(documentUrls[i]),
-      );
+      ));
       if (i < documentUrls.length - 1 || photoUrls.length > 0) await gap();
     }
 
     for (let i = 0; i < photoUrls.length; i++) {
       await sendTypingPresence(instanceName, senderPhone, 2000);
-      await evolutionProvider.sendImage(businessId, senderPhone, photoUrls[i]);
+      await trySend(`photo[${i}]`, () => evolutionProvider.sendImage(businessId, senderPhone, photoUrls[i]));
       if (i < photoUrls.length - 1) await gap();
     }
 
@@ -291,10 +303,10 @@ async function sendAutomationFlow(
       if (closing[i].kind === 'audio') {
         // "recording" rather than "composing" so the indicator matches what arrives
         await sendTypingPresence(instanceName, senderPhone, 3000, 'recording');
-        await evolutionProvider.sendAudio(businessId, senderPhone, closing[i].value);
+        await trySend('audio', () => evolutionProvider.sendAudio(businessId, senderPhone, closing[i].value));
       } else {
         await sendTypingPresence(instanceName, senderPhone, 2000);
-        await evolutionProvider.sendText(businessId, senderPhone, closing[i].value);
+        await trySend(closing[i].isMessage3 ? 'message3' : 'message2', () => evolutionProvider.sendText(businessId, senderPhone, closing[i].value));
       }
     }
   }

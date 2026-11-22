@@ -51,19 +51,44 @@ export function instanceNameFor(businessId: string): string {
   return `merchant_${businessId}`;
 }
 
-async function evoFetch(path: string, options: RequestInit = {}): Promise<unknown> {
+// Transient Evolution/Baileys failures — a reconnecting WhatsApp socket returns
+// 5xx with "Connection Closed", or the fetch itself throws — are retried a
+// couple of times before giving up, so a brief reconnect (e.g. a hibernate/wake
+// "conflict, replaced") doesn't silently drop a message mid-flow.
+const EVO_MAX_RETRIES = 2;
+const EVO_RETRY_DELAY_MS = 2_500;
+
+async function evoFetch(path: string, options: RequestInit = {}, attempt = 0): Promise<unknown> {
   const url = `${EVOLUTION_BASE_URL}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: EVOLUTION_KEY!,
-      ...((options.headers ?? {}) as Record<string, string>),
-    },
-  });
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: EVOLUTION_KEY!,
+        ...((options.headers ?? {}) as Record<string, string>),
+      },
+    });
+  } catch (err) {
+    if (attempt < EVO_MAX_RETRIES) {
+      console.warn(`[evolution] ${options.method ?? 'GET'} ${path} network error (try ${attempt + 1}/${EVO_MAX_RETRIES + 1}) — retrying in ${EVO_RETRY_DELAY_MS}ms`);
+      await new Promise(r => setTimeout(r, EVO_RETRY_DELAY_MS));
+      return evoFetch(path, options, attempt + 1);
+    }
+    throw err;
+  }
 
   const text = await res.text();
   if (!res.ok) {
+    // 5xx usually means the Baileys socket was momentarily closed while the
+    // instance reconnected — retry before failing instead of dropping the send.
+    if (res.status >= 500 && attempt < EVO_MAX_RETRIES) {
+      console.warn(`[evolution] ${options.method ?? 'GET'} ${path} → ${res.status} (try ${attempt + 1}/${EVO_MAX_RETRIES + 1}) — retrying in ${EVO_RETRY_DELAY_MS}ms`);
+      await new Promise(r => setTimeout(r, EVO_RETRY_DELAY_MS));
+      return evoFetch(path, options, attempt + 1);
+    }
     console.error(`[evolution] ${options.method ?? 'GET'} ${path} → ${res.status}: ${text}`);
     throw new Error(`Evolution API error ${res.status}: ${text}`);
   }
