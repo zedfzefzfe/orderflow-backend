@@ -19,6 +19,7 @@ import customerRoutes from './routes/customers.js';
 import automationRoutes from './routes/automations.js';
 import whatsappRoutes from './whatsapp/routes.js';
 import authRoutes from './routes/auth.js';
+import publicRoutes from './routes/public.js';
 import { sendAllWeeklyReports } from './services/weeklyReport.js';
 import { prisma } from './lib/prisma.js';
 import './cron/deliveryReminders.js';
@@ -57,6 +58,7 @@ app.use('/api/agent', agentRoutes);
 app.use('/api/customers', customerRoutes);
 app.use('/api/automations', automationRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/public', publicRoutes);
 
 // 404 handler
 app.use((_req, res) => {
