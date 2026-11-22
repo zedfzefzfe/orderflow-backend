@@ -47,15 +47,18 @@ const FALLBACK_MESSAGE =
 // Delay before the very first reply to a new contact: 50 s.
 // Raise REPLY_JITTER_MS above 0 to spread replies out again — a fixed delay
 // makes every reply land at exactly the same interval, which reads as a bot.
-const REPLY_DELAY_MS = 50_000;
-const REPLY_JITTER_MS = 0;
+const REPLY_DELAY_MS = 30_000;
+const REPLY_JITTER_MS = 10_000;
 
 // Between the opener and the media block.
-const OPENER_DELAY_MS = 10_000;
+const OPENER_DELAY_MS = 2_000;
 
-// Between the media and the closing block. 0 = the messages follow the media
-// straight on, with no wait.
-const CLOSING_DELAY_MS = 0;
+// Between the opener's own messages, when the welcome text is split into
+// several bubbles by a blank line.
+const OPENER_SPLIT_GAP_MS = 3_000;
+
+// Between the media and the closing block.
+const CLOSING_DELAY_MS = 2_000;
 
 // Between consecutive closing texts (message2 → message3).
 const MESSAGE_GAP_MS = 1_000;
@@ -63,9 +66,8 @@ const MESSAGE_GAP_MS = 1_000;
 // Between the two voice notes.
 const AUDIO_GAP_MS = 5_000;
 
-// Before message3, the closing question — long enough for the customer to have
-// listened to the voice notes that set it up.
-const MESSAGE3_DELAY_MS = 40_000;
+// Before message3, the closing question.
+const MESSAGE3_DELAY_MS = 3_000;
 
 // ── Webhook processor (extracted so the route can return 200 immediately) ─────
 
@@ -208,11 +210,18 @@ async function sendAutomationFlow(
   // Flips on the first thing sent, so the leading block never waits first
   let sentSomething = false;
 
-  // ── 1. Opener ───────────────────────────────────────────────────────────
+  // ── 1. Opener — split into separate bubbles on a blank line ─────────────
   if (automation.welcomeMessage) {
-    await sendTypingPresence(instanceName, senderPhone, 3000);
-    await evolutionProvider.sendText(businessId, senderPhone, automation.welcomeMessage);
-    sentSomething = true;
+    const openerParts = automation.welcomeMessage
+      .split(/\n\s*\n/)
+      .map(p => p.trim())
+      .filter(Boolean);
+    for (let i = 0; i < openerParts.length; i++) {
+      if (i > 0) await pause(OPENER_SPLIT_GAP_MS);
+      await sendTypingPresence(instanceName, senderPhone, 2000);
+      await evolutionProvider.sendText(businessId, senderPhone, openerParts[i]);
+    }
+    if (openerParts.length > 0) sentSomething = true;
   }
 
   // ── 2. Media — video, then PDFs, then photos ────────────────────────────
